@@ -1,0 +1,17 @@
+{
+  "name": "nag-iba-school-portal",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node --env-file-if-exists=.env server.js",
+    "check": "node --check server.js && node --check app.js && node --check permissions.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "dependencies": {
+    "pg": "^8.16.3"
+  }
+}

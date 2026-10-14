@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f3f7fd" />
+    <title>Nag-iba National High School | School Portal</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <section id="login-screen" class="login-screen" aria-labelledby="login-title">
+      <div class="login-brand">
+        <img class="brand-mark" src="school-logo.png" alt="Nag-iba National High School crest" />
+        <span><strong>Nag-iba</strong><small>National High School</small></span>
+      </div>
+      <div class="login-card">
+        <div class="login-kicker">NAG-IBA NATIONAL HIGH SCHOOL</div>
+        <h1 id="login-title">Sign in to your portal</h1>
+        <p class="login-intro">Choose your account type and enter your school credentials.</p>
+        <form id="login-form">
+          <label class="login-field" for="login-role">Log in as
+            <select id="login-role" name="role" required>
+              <option value="developer">Developer</option>
+              <option value="admin">Administrator</option>
+              <option value="teacher">Teacher</option>
+              <option value="student">Student</option>
+            </select>
+          </label>
+          <label class="login-field" for="login-username">Username
+            <input id="login-username" name="username" type="text" autocomplete="username" required maxlength="40" />
+          </label>
+          <label class="login-field" for="login-password">Password
+            <input id="login-password" name="password" type="password" autocomplete="current-password" required maxlength="256" />
+          </label>
+          <p id="login-error" class="form-error" role="alert" hidden></p>
+          <button class="login-submit" type="submit">Sign in <span aria-hidden="true">→</span></button>
+        </form>
+        <p class="login-footnote">Your password is verified by the school portal and is never stored in your browser.</p>
+      </div>
+      <div class="login-footer">Nag-iba National High School · 2026–2027</div>
+    </section>
+
+    <div class="app-layout" id="dashboard-app" hidden>
+      <aside class="sidebar" aria-label="Main navigation">
+        <a class="brand" href="#" aria-label="Nag-iba National High School home">
+          <img class="brand-mark" src="school-logo.png" alt="" />
+          <span><strong>Nag-iba</strong><small>National High School</small></span>
+        </a>
+        <div class="nav-label">SCHOOL PORTAL</div>
+        <nav class="main-nav">
+          <button class="nav-link active" type="button" data-view="overview" aria-current="page"><span class="nav-icon" aria-hidden="true">◫</span>Overview</button>
+          <button class="nav-link" type="button" data-view="users" id="users-nav"><span class="nav-icon" aria-hidden="true">♙</span><span id="users-nav-label">Accounts</span></button>
+          <button class="nav-link" type="button" data-view="messages"><span class="nav-icon" aria-hidden="true">✉</span>Messages<span class="nav-count" id="unread-count" hidden></span></button>
+          <button class="nav-link" type="button" data-view="announcements"><span class="nav-icon" aria-hidden="true">◷</span>Announcements</button>
+          <button class="nav-link" type="button" data-view="tasks"><span class="nav-icon" aria-hidden="true">☑</span><span id="tasks-nav-label">Tasks</span></button>
+          <button class="nav-link" type="button" data-view="documents"><span class="nav-icon" aria-hidden="true">▤</span>Documents</button>
+          <button class="nav-link" type="button" data-view="settings"><span class="nav-icon" aria-hidden="true">⚙</span>Settings</button>
+        </nav>
+        <div class="sidebar-bottom">
+          <div class="profile">
+            <div class="avatar" id="profile-avatar">NH</div>
+            <div class="profile-info"><strong id="profile-name">School User</strong><span id="profile-role">Account</span></div>
+          </div>
+          <button class="sign-out-button" id="sign-out" type="button"><span aria-hidden="true">↩</span> Sign out</button>
+        </div>
+      </aside>
+
+      <main class="main-content">
+        <header class="topbar">
+          <div class="breadcrumbs"><span>Nag-iba National High School</span><span class="crumb-separator">/</span><strong id="breadcrumb-current">Overview</strong></div>
+          <div class="topbar-actions"><span class="school-year"><span class="status-dot"></span>2026–2027 school year</span></div>
+        </header>
+        <div class="content-wrap">
+          <section class="page-heading">
+            <div><div class="eyebrow">SCHOOL PORTAL</div><h1 id="page-title">Overview</h1><p id="page-description">Welcome to the Nag-iba National High School portal.</p></div>
+            <span class="active-role" id="active-role"></span>
+          </section>
+          <div id="global-error" class="global-error" role="alert" hidden></div>
+
+          <section class="portal-view" id="view-overview">
+            <div class="section-heading"><div><h2 id="welcome-heading">Welcome</h2><p>Your school workspace at a glance.</p></div></div>
+            <div id="overview-stats" class="overview-stats"></div>
+            <div class="overview-columns">
+              <section class="panel">
+                <div class="panel-heading"><div><h2>Latest announcements</h2><p>Updates from your school</p></div><button class="text-button" type="button" data-go-view="announcements">All announcements</button></div>
+                <div id="overview-announcements" class="feed-list"></div>
+              </section>
+              <section class="panel">
+                <div class="panel-heading"><div><h2 id="overview-tasks-title">Tasks</h2><p>Recent school work</p></div><button class="text-button" type="button" data-go-view="tasks">View tasks</button></div>
+                <div id="overview-tasks" class="feed-list"></div>
+              </section>
+            </div>
+          </section>
+
+          <section class="portal-view" id="view-users" hidden>
+            <div class="section-heading"><div><h2 id="users-heading">Accounts</h2><p id="users-description">Manage school portal accounts permitted for your role.</p></div><button class="button button-primary" id="add-user-button" type="button">＋ Add account</button></div>
+            <section class="panel">
+              <div class="panel-heading"><div><h2>School accounts</h2><p>Account management actions are restricted by your role.</p></div><label class="search-box"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m16 16 4 4"/></svg><input id="user-search" type="search" placeholder="Search accounts" aria-label="Search accounts" /></label></div>
+              <div class="table-scroll"><table class="data-table user-table"><thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Status</th><th>Actions</th></tr></thead><tbody id="user-rows"></tbody></table></div>
+              <div class="table-footer"><span id="user-count"></span><span>Deleted accounts cannot sign in. Existing school records may retain their history.</span></div>
+            </section>
+          </section>
+
+          <section class="portal-view" id="view-messages" hidden>
+            <div class="section-heading"><div><h2>Messages</h2><p>Send a private message to an active school account.</p></div></div>
+            <div class="messages-layout">
+              <section class="panel">
+                <div class="panel-heading"><div><h2>Compose a message</h2><p>Messages are visible only to the sender and recipient.</p></div></div>
+                <form id="message-form" class="portal-form">
+                  <label class="login-field" for="message-recipient">Send to<select id="message-recipient" name="recipientId" required></select></label>
+                  <label class="login-field" for="message-body">Message<textarea id="message-body" name="body" rows="4" maxlength="4000" required></textarea></label>
+                  <div class="form-actions"><span class="form-hint">Up to 4,000 characters</span><button class="button button-primary" type="submit">Send message</button></div>
+                </form>
+              </section>
+              <section class="panel">
+                <div class="panel-heading"><div><h2>Inbox &amp; sent</h2><p>Your most recent conversations</p></div><button class="text-button" type="button" id="refresh-messages">Refresh</button></div>
+                <div id="message-list" class="feed-list"></div>
+              </section>
+            </div>
+          </section>
+
+          <section class="portal-view" id="view-announcements" hidden>
+            <div class="section-heading"><div><h2>Announcements</h2><p>School and classroom updates.</p></div></div>
+            <section class="panel compose-panel" id="announcement-compose-panel" hidden>
+              <div class="panel-heading"><div><h2>Publish an announcement</h2><p>Visible to all active portal accounts.</p></div></div>
+              <form id="announcement-form" class="portal-form">
+                <label class="login-field" for="announcement-title">Title<input id="announcement-title" name="title" maxlength="180" required /></label>
+                <label class="login-field" for="announcement-body">Announcement<textarea id="announcement-body" name="body" rows="4" maxlength="10000" required></textarea></label>
+                <div class="form-actions"><span class="form-hint">Up to 10,000 characters</span><button class="button button-primary" type="submit">Publish</button></div>
+              </form>
+            </section>
+            <div id="announcement-list" class="content-feed"></div>
+          </section>
+
+          <section class="portal-view" id="view-tasks" hidden>
+            <div class="section-heading"><div><h2 id="tasks-heading">Tasks</h2><p id="tasks-description">School work and due dates.</p></div></div>
+            <section class="panel compose-panel" id="task-compose-panel" hidden>
+              <div class="panel-heading"><div><h2>Assign work</h2><p>Assign to one student or make it available to all students.</p></div></div>
+              <form id="task-form" class="portal-form">
+                <label class="login-field" for="task-title">Title<input id="task-title" name="title" maxlength="180" required /></label>
+                <label class="login-field" for="task-description">Instructions<textarea id="task-description" name="description" rows="4" maxlength="10000" required></textarea></label>
+                <div class="form-row">
+                  <label class="login-field" for="task-due">Due date<input id="task-due" name="dueAt" type="datetime-local" /></label>
+                  <label class="login-field" for="task-assignee">Assign to<select id="task-assignee" name="assignedTo"></select></label>
+                </div>
+                <div class="form-actions"><span class="form-hint">Choose “All students” to share broadly.</span><button class="button button-primary" type="submit">Assign task</button></div>
+              </form>
+            </section>
+            <div id="task-list" class="content-feed"></div>
+          </section>
+
+          <section class="portal-view" id="view-documents" hidden>
+            <section class="panel empty-feature"><span class="empty-icon">▤</span><h2>Document submissions</h2><p>Document requirements will appear here when the school connects the document-submission database. Sample dashboard figures have been removed.</p></section>
+          </section>
+
+          <section class="portal-view" id="view-settings" hidden>
+            <div class="section-heading"><div><h2>Account security</h2><p>Update your sign-in password.</p></div></div>
+            <section class="panel security-panel">
+              <div class="panel-heading"><div><h2>Change password</h2><p>Use a unique password that is at least 12 characters long.</p></div></div>
+              <form id="password-form" class="portal-form">
+                <label class="login-field" for="current-password">Current password<input id="current-password" name="currentPassword" type="password" autocomplete="current-password" required maxlength="256" /></label>
+                <label class="login-field" for="new-password">New password<input id="new-password" name="newPassword" type="password" autocomplete="new-password" minlength="12" required maxlength="256" /></label>
+                <label class="login-field" for="confirm-password">Confirm new password<input id="confirm-password" name="confirmPassword" type="password" autocomplete="new-password" minlength="12" required maxlength="256" /></label>
+                <p id="password-form-error" class="form-error" role="alert" hidden></p>
+                <div class="form-actions"><span class="form-hint">Your other active sessions will be signed out.</span><button class="button button-primary" type="submit">Update password</button></div>
+              </form>
+            </section>
+          </section>
+
+          <footer class="page-footer"><span>Nag-iba National High School</span><span>School portal · 2026–2027</span></footer>
+        </div>
+      </main>
+    </div>
+
+    <dialog id="user-dialog" class="detail-dialog" aria-labelledby="user-dialog-title">
+      <form id="user-form">
+        <div class="dialog-heading"><div><span class="eyebrow">ACCOUNT MANAGEMENT</span><h2 id="user-dialog-title">Add account</h2></div><button class="icon-button" id="close-user-dialog" type="button" aria-label="Close">×</button></div>
+        <div class="portal-form dialog-form">
+          <label class="login-field" for="account-name">Full name<input id="account-name" name="displayName" required maxlength="120" /></label>
+          <label class="login-field" for="account-username">Username<input id="account-username" name="username" required minlength="3" maxlength="40" autocomplete="off" /></label>
+          <label class="login-field" for="account-email">Email (optional)<input id="account-email" name="email" type="email" maxlength="254" /></label>
+          <label class="login-field" for="account-role">Role<select id="account-role" name="role"></select></label>
+          <label class="login-field" for="account-password">Initial / replacement password<input id="account-password" name="password" type="password" minlength="12" maxlength="256" autocomplete="new-password" /><small id="password-hint">Use at least 12 characters.</small></label>
+          <label class="checkbox-field" id="account-active-wrap" hidden><input id="account-active" type="checkbox" checked /> Account is active</label>
+          <p id="user-form-error" class="form-error" role="alert" hidden></p>
+        </div>
+        <div class="dialog-actions"><button class="button button-secondary" id="cancel-user-dialog" type="button">Cancel</button><button class="button button-primary" id="save-user-button" type="submit">Create account</button></div>
+      </form>
+    </dialog>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  </body>
+</html>
