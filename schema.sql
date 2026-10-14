@@ -54,6 +54,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   description TEXT NOT NULL CHECK (CHAR_LENGTH(description) BETWEEN 1 AND 10000),
   due_at TIMESTAMPTZ,
   assigned_to BIGINT REFERENCES users(id) ON DELETE SET NULL,
+  assigned_role TEXT CHECK (assigned_role IN ('teacher', 'student')),
+  subject_id BIGINT,
   is_global BOOLEAN NOT NULL DEFAULT TRUE,
   created_by BIGINT REFERENCES users(id) ON DELETE SET NULL,
   creator_name TEXT NOT NULL,
@@ -74,3 +76,45 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 );
 
 CREATE INDEX IF NOT EXISTS audit_logs_created_idx ON audit_logs (created_at DESC);
+
+
+-- Subject/classroom management and task file attachments.
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS assigned_role TEXT CHECK (assigned_role IN ('teacher', 'student'));
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS subject_id BIGINT;
+UPDATE tasks t SET assigned_role = 'student' WHERE assigned_to IS NOT NULL AND assigned_role IS NULL;
+
+CREATE TABLE IF NOT EXISTS subjects (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  name TEXT NOT NULL CHECK (CHAR_LENGTH(name) BETWEEN 1 AND 160),
+  code TEXT,
+  description TEXT NOT NULL DEFAULT '',
+  teacher_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (teacher_id, name)
+);
+CREATE INDEX IF NOT EXISTS subjects_teacher_idx ON subjects (teacher_id, created_at DESC);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'tasks_subject_fk') THEN
+    ALTER TABLE tasks ADD CONSTRAINT tasks_subject_fk FOREIGN KEY (subject_id) REFERENCES subjects(id) ON DELETE SET NULL;
+  END IF;
+END $$;
+
+CREATE TABLE IF NOT EXISTS subject_students (
+  subject_id BIGINT NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
+  student_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  assigned_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (subject_id, student_id)
+);
+CREATE INDEX IF NOT EXISTS subject_students_student_idx ON subject_students (student_id, subject_id);
+
+CREATE TABLE IF NOT EXISTS task_attachments (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  task_id BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  file_name TEXT NOT NULL,
+  mime_type TEXT NOT NULL DEFAULT 'application/octet-stream',
+  file_size BIGINT NOT NULL,
+  file_data BYTEA NOT NULL,
+  uploaded_by BIGINT REFERENCES users(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS task_attachments_task_idx ON task_attachments (task_id);

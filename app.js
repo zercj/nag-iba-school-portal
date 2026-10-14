@@ -22,6 +22,7 @@ let directory = [];
 let messages = [];
 let announcements = [];
 let tasks = [];
+let subjects = [];
 let editingUserId = null;
 let toastTimer;
 const isStaticHost = window.location.protocol === "file:"
@@ -104,6 +105,7 @@ function updateNavigation() {
   document.querySelector("#tasks-nav-label").textContent = currentUser.role === "student" ? "My tasks" : "Tasks";
   document.querySelector("#announcement-compose-panel").hidden = currentUser.role === "student";
   document.querySelector("#task-compose-panel").hidden = currentUser.role === "student";
+  document.querySelector("#subject-compose-panel").hidden = currentUser.role !== "teacher";
   document.querySelector("#add-user-button").hidden = !canManage;
   document.querySelector("#active-role").textContent = roleLabels[currentUser.role];
   document.querySelector("#profile-name").textContent = currentUser.displayName;
@@ -244,25 +246,29 @@ function populateRecipientOptions() {
     `<option value="${escapeHtml(user.id)}">${escapeHtml(user.displayName)} · ${escapeHtml(roleLabels[user.role])}</option>`
   ).join("");
   const studentSelect = document.querySelector("#task-assignee");
-  studentSelect.innerHTML = '<option value="">All students</option>' + directory.filter((user) => user.role === "student").map((user) =>
+  const assignees = currentUser.role === "admin" || currentUser.role === "developer"
+    ? directory.filter((user) => user.role === "teacher")
+    : directory.filter((user) => user.role === "student");
+  studentSelect.innerHTML = (currentUser.role === "teacher" ? '<option value="">Choose a student</option>' : '<option value="">All students / no specific assignee</option>') + assignees.map((user) =>
     `<option value="${escapeHtml(user.id)}">${escapeHtml(user.displayName)}</option>`
   ).join("");
+  studentSelect.required = currentUser.role === "teacher" && !document.querySelector("#task-subject").value;
+  const subjectSelect = document.querySelector("#task-subject");
+  subjectSelect.innerHTML = '<option value="">No subject</option>' + subjects.map((subject) => `<option value="${escapeHtml(subject.id)}">${escapeHtml(subject.name)}</option>`).join("");
 }
 
 function renderAnnouncements() {
   document.querySelector("#announcement-list").innerHTML = announcements.length
-    ? announcements.map((item) => `<article class="content-card"><div class="content-card-heading"><h3>${escapeHtml(item.title)}</h3><span>${formatDate(item.created_at)}</span></div><p>${escapeHtml(item.body)}</p><small>Posted by ${escapeHtml(item.author_name || "School account")}</small></article>`).join("")
+    ? announcements.map((item) => `<article class="content-card"><div class="content-card-heading"><h3>${escapeHtml(item.title)}</h3><span>${formatDate(item.created_at)}</span></div><p>${escapeHtml(item.body)}</p><small>Posted by ${escapeHtml(item.author_name || "School account")}</small>${(["admin","developer"].includes(currentUser.role) || String(item.author_id) === String(currentUser.id)) ? `<div class="row-actions"><button class="action-link danger-link" type="button" data-delete-announcement="${escapeHtml(item.id)}">Delete announcement</button></div>` : ""}</article>`).join("")
     : emptyFeed("No announcements have been published.");
 }
 
 function renderTasks() {
   document.querySelector("#task-list").innerHTML = tasks.length
-    ? tasks.map((item) => `<article class="content-card"><div class="content-card-heading"><h3>${escapeHtml(item.title)}</h3><span class="deadline-chip">Due ${formatDate(item.due_at)}</span></div><p>${escapeHtml(item.description)}</p><small>${item.assigned_name ? `Assigned to ${escapeHtml(item.assigned_name)}` : "Available to all students"} · Posted by ${escapeHtml(item.creator_name)}</small></article>`).join("")
+    ? tasks.map((item) => `<article class="content-card"><div class="content-card-heading"><h3>${escapeHtml(item.title)}</h3><span class="deadline-chip">Due ${formatDate(item.due_at)}</span></div><p>${escapeHtml(item.description)}</p><small>${item.subject_name ? `Subject: ${escapeHtml(item.subject_name)} · ` : ""}${item.assigned_name ? `Assigned to ${escapeHtml(item.assigned_name)}` : "Shared with students"} · Posted by ${escapeHtml(item.creator_name)}</small>${(item.attachments || []).length ? `<div class="attachment-list"><strong>Attachments</strong>${item.attachments.map((file) => `<a class="action-link" href="/api/task-files/${encodeURIComponent(file.id)}" target="_blank" rel="noopener">📎 ${escapeHtml(file.fileName)} (${(Number(file.fileSize)/1024/1024).toFixed(2)} MB)</a>`).join("")}</div>` : ""}${(["admin","developer"].includes(currentUser.role) || String(item.created_by) === String(currentUser.id) || String(item.creator_id) === String(currentUser.id)) ? `<div class="row-actions"><button class="action-link danger-link" type="button" data-delete-task="${escapeHtml(item.id)}">Delete task</button></div>` : ""}</article>`).join("")
     : emptyFeed("No tasks have been assigned.");
   document.querySelector("#tasks-heading").textContent = currentUser.role === "student" ? "My tasks" : "Tasks and assigned work";
-  document.querySelector("#tasks-description").textContent = currentUser.role === "student"
-    ? "Tasks assigned to you and work shared with all students."
-    : "Assignments created by administrators and teachers.";
+  document.querySelector("#tasks-description").textContent = currentUser.role === "student" ? "Tasks assigned to you and work shared with your classes." : "Admins assign tasks to teachers; teachers assign work to enrolled students.";
 }
 
 async function refreshUsers() {
@@ -301,10 +307,10 @@ async function refreshAnnouncements() {
 async function refreshTasks() {
   try {
     tasks = (await api("/api/tasks")).tasks;
-    if (currentUser.role !== "student") {
-      directory = (await api("/api/directory")).users;
-      populateRecipientOptions();
-    }
+    subjects = (await api("/api/subjects")).subjects;
+    if (currentUser.role !== "student") directory = (await api("/api/directory")).users;
+    populateRecipientOptions();
+    renderSubjects();
     renderTasks();
     renderOverview();
   } catch (error) {
@@ -510,17 +516,62 @@ document.querySelector("#announcement-form").addEventListener("submit", async (e
   }
 });
 
+document.querySelector("#announcement-list").addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-delete-announcement]"); if (!button) return;
+  if (!confirm("Delete this announcement? This cannot be undone.")) return;
+  try { await api(`/api/announcements/${encodeURIComponent(button.dataset.deleteAnnouncement)}`, { method: "DELETE" }); await refreshAnnouncements(); showToast("Announcement deleted."); }
+  catch (error) { setGlobalError(error.message); }
+});
+document.querySelector("#task-list").addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-delete-task]"); if (!button) return;
+  if (!confirm("Delete this task and its attachments? This cannot be undone.")) return;
+  try { await api(`/api/tasks/${encodeURIComponent(button.dataset.deleteTask)}`, { method: "DELETE" }); await refreshTasks(); showToast("Task deleted."); }
+  catch (error) { setGlobalError(error.message); }
+});
+
+async function fileToPayload(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve({ name: file.name, type: file.type || "application/octet-stream", data: String(reader.result).split(",")[1] || "" });
+    reader.onerror = () => reject(new Error(`Could not read ${file.name}.`));
+    reader.readAsDataURL(file);
+  });
+}
+
+function renderSubjects() {
+  const host = document.querySelector("#subject-list");
+  if (!host) return;
+  host.innerHTML = subjects.length ? subjects.map((subject) => `<article class="content-card"><div class="content-card-heading"><h3>${escapeHtml(subject.name)}${subject.code ? ` · ${escapeHtml(subject.code)}` : ""}</h3><span>${(subject.students || []).length} students</span></div><p>${escapeHtml(subject.description || "No description provided.")}</p>${currentUser.role === "teacher" ? `<label class="login-field">Assign students to this subject<select multiple size="5" data-subject-students="${escapeHtml(subject.id)}">${directory.filter((u) => u.role === "student").map((u) => `<option value="${escapeHtml(u.id)}" ${(subject.students || []).some((st) => String(st.id) === String(u.id)) ? "selected" : ""}>${escapeHtml(u.displayName)}</option>`).join("")}</select></label><div class="row-actions"><button class="button button-primary" type="button" data-save-subject-students="${escapeHtml(subject.id)}">Save assigned students</button></div>` : `<small>Teacher: ${escapeHtml(subject.teacher_name || "School teacher")}</small>`}</article>`).join("") : emptyFeed(currentUser.role === "teacher" ? "Create your first subject, then assign students to it." : "No subjects are available yet.");
+}
+
+document.querySelector("#task-subject").addEventListener("change", () => { const select = document.querySelector("#task-assignee"); select.required = currentUser.role === "teacher" && !document.querySelector("#task-subject").value; });
+
+document.querySelector("#subject-form").addEventListener("submit", async (event) => {
+  event.preventDefault(); const data = new FormData(event.currentTarget);
+  try { await api("/api/subjects", { method: "POST", body: { name: data.get("name"), code: data.get("code"), description: data.get("description") } }); event.currentTarget.reset(); await refreshTasks(); showToast("Subject created."); }
+  catch (error) { setGlobalError(error.message); }
+});
+document.querySelector("#subject-list").addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-save-subject-students]"); if (!button) return;
+  const select = document.querySelector(`[data-subject-students="${CSS.escape(button.dataset.saveSubjectStudents)}"]`);
+  try { await api(`/api/subjects/${encodeURIComponent(button.dataset.saveSubjectStudents)}/students`, { method: "POST", body: { studentIds: [...select.selectedOptions].map((option) => option.value) } }); await refreshTasks(); showToast("Subject student assignments saved."); }
+  catch (error) { setGlobalError(error.message); }
+});
+
 document.querySelector("#task-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const data = new FormData(event.currentTarget);
   try {
+    const selectedFiles = [...(document.querySelector("#task-files").files || [])];
+    if (selectedFiles.some((file) => file.size > 8 * 1024 * 1024)) throw new Error("Each attachment must be 8 MB or smaller.");
+    if (selectedFiles.length > 10) throw new Error("Choose no more than 10 files.");
+    const files = await Promise.all(selectedFiles.map(fileToPayload));
     await api("/api/tasks", {
       method: "POST",
       body: {
-        title: data.get("title"),
-        description: data.get("description"),
+        title: data.get("title"), description: data.get("description"),
         dueAt: data.get("dueAt") ? new Date(data.get("dueAt")).toISOString() : null,
-        assignedTo: data.get("assignedTo") || null,
+        assignedTo: data.get("assignedTo") || null, subjectId: data.get("subjectId") || null, files,
       },
     });
     event.currentTarget.reset();

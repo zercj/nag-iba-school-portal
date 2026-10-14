@@ -124,7 +124,7 @@ function parseJson(request) {
     let raw = "";
     request.on("data", (chunk) => {
       raw += chunk;
-      if (raw.length > 1_000_000) {
+      if (raw.length > 12_000_000) {
         reject(new HttpError(413, "Request body is too large."));
         request.destroy();
       }
@@ -598,100 +598,145 @@ async function handleAnnouncementRoutes(request, response, url, actor) {
   return false;
 }
 
+async function handleSubjectRoutes(request, response, url, actor) {
+  if (url.pathname === "/api/subjects" && request.method === "GET") {
+    const result = actor.role === "student"
+      ? await pool.query(`SELECT s.id, s.name, s.code, s.description, s.teacher_id, u.display_name AS teacher_name,
+          COALESCE(json_agg(json_build_object('id', st.id, 'displayName', st.display_name)) FILTER (WHERE st.id IS NOT NULL), '[]') AS students
+          FROM subjects s JOIN subject_students ss ON ss.subject_id=s.id
+          JOIN users u ON u.id=s.teacher_id LEFT JOIN subject_students sx ON sx.subject_id=s.id
+          LEFT JOIN users st ON st.id=sx.student_id WHERE ss.student_id=$1
+          GROUP BY s.id,u.display_name ORDER BY s.name`, [actor.id])
+      : actor.role === "teacher"
+        ? await pool.query(`SELECT s.id, s.name, s.code, s.description, s.teacher_id, u.display_name AS teacher_name,
+            COALESCE(json_agg(json_build_object('id', st.id, 'displayName', st.display_name)) FILTER (WHERE st.id IS NOT NULL), '[]') AS students
+            FROM subjects s JOIN users u ON u.id=s.teacher_id LEFT JOIN subject_students ss ON ss.subject_id=s.id
+            LEFT JOIN users st ON st.id=ss.student_id WHERE s.teacher_id=$1 GROUP BY s.id,u.display_name ORDER BY s.name`, [actor.id])
+        : await pool.query(`SELECT s.id, s.name, s.code, s.description, s.teacher_id, u.display_name AS teacher_name,
+            COALESCE(json_agg(json_build_object('id', st.id, 'displayName', st.display_name)) FILTER (WHERE st.id IS NOT NULL), '[]') AS students
+            FROM subjects s JOIN users u ON u.id=s.teacher_id LEFT JOIN subject_students ss ON ss.subject_id=s.id
+            LEFT JOIN users st ON st.id=ss.student_id GROUP BY s.id,u.display_name ORDER BY s.name`);
+    sendJson(response, 200, { subjects: result.rows }); return true;
+  }
+  if (url.pathname === "/api/subjects" && request.method === "POST") {
+    ensureSameOrigin(request); requireRole(actor, ["teacher"]);
+    const body = await parseJson(request);
+    const name = requiredText(body.name, "Subject name", 160);
+    const code = body.code ? requiredText(body.code, "Subject code", 40) : null;
+    const description = body.description ? requiredText(body.description, "Description", 2000) : "";
+    const result = await pool.query(`INSERT INTO subjects(name,code,description,teacher_id) VALUES($1,$2,$3,$4)
+      RETURNING id,name,code,description,teacher_id`, [name, code, description, actor.id]);
+    await pool.query("INSERT INTO audit_logs(actor_id,action,target_type,target_id) VALUES($1,'subject.created','subject',$2)", [actor.id, result.rows[0].id]);
+    sendJson(response, 201, { subject: result.rows[0] }); return true;
+  }
+  const enrollMatch = url.pathname.match(/^\/api\/subjects\/(\d+)\/students$/);
+  if (enrollMatch && request.method === "POST") {
+    ensureSameOrigin(request); requireRole(actor, ["teacher"]);
+    const body = await parseJson(request);
+    if (!Array.isArray(body.studentIds) || body.studentIds.length > 500) throw new HttpError(400, "Choose one or more students.");
+    const subject = await pool.query("SELECT id FROM subjects WHERE id=$1 AND teacher_id=$2", [enrollMatch[1], actor.id]);
+    if (!subject.rowCount) throw new HttpError(404, "Subject not found for this teacher.");
+    const connection = await pool.connect();
+    try {
+      await connection.query("BEGIN");
+      for (const id of [...new Set(body.studentIds.map(String))]) {
+        if (!/^\d+$/.test(id)) throw new HttpError(400, "Invalid student account.");
+        const student = await connection.query("SELECT id FROM users WHERE id=$1 AND role='student' AND active=TRUE", [id]);
+        if (!student.rowCount) throw new HttpError(400, "Only active student accounts can be assigned to a subject.");
+        await connection.query("INSERT INTO subject_students(subject_id,student_id) VALUES($1,$2) ON CONFLICT DO NOTHING", [enrollMatch[1], id]);
+      }
+      await connection.query("COMMIT");
+    } catch (error) { await connection.query("ROLLBACK"); throw error; } finally { connection.release(); }
+    sendJson(response, 200, { ok: true }); return true;
+  }
+  return false;
+}
+
 async function handleTaskRoutes(request, response, url, actor) {
   if (request.method === "GET" && url.pathname === "/api/tasks") {
-    const result = actor.role === "student"
-      ? await pool.query(
-        `SELECT t.id, t.title, t.description, t.due_at, t.assigned_to, t.is_global, t.created_at,
-                t.creator_name, u.display_name AS assigned_name
-         FROM tasks t LEFT JOIN users u ON u.id = t.assigned_to
-         WHERE t.is_global = TRUE OR t.assigned_to = $1
-         ORDER BY t.due_at NULLS LAST, t.created_at DESC LIMIT 200`,
-        [actor.id],
-      )
-      : await pool.query(
-        `SELECT t.id, t.title, t.description, t.due_at, t.assigned_to, t.is_global, t.created_at,
-                t.creator_name, u.display_name AS assigned_name
-         FROM tasks t LEFT JOIN users u ON u.id = t.assigned_to
-         ORDER BY t.due_at NULLS LAST, t.created_at DESC LIMIT 200`,
-      );
-    sendJson(response, 200, { tasks: result.rows });
-    return true;
+    const where = actor.role === "student"
+      ? "WHERE (t.is_global=TRUE AND t.assigned_role IS NULL AND t.subject_id IS NULL) OR (t.assigned_to=$1 AND t.assigned_role='student') OR (t.subject_id IN (SELECT subject_id FROM subject_students WHERE student_id=$1) AND t.assigned_role IS NULL)"
+      : actor.role === "teacher" ? "WHERE (t.created_by=$1 OR t.assigned_to=$1 AND t.assigned_role='teacher')" : "";
+    const values = actor.role === "admin" || actor.role === "developer" ? [] : [actor.id];
+    const result = await pool.query(`SELECT t.id,t.title,t.description,t.due_at,t.assigned_to,t.assigned_role,t.subject_id,t.is_global,t.created_at,
+      t.creator_name,t.created_by,u.display_name AS assigned_name,s.name AS subject_name,
+      COALESCE((SELECT json_agg(json_build_object('id',a.id,'fileName',a.file_name,'mimeType',a.mime_type,'fileSize',a.file_size)) FROM task_attachments a WHERE a.task_id=t.id),'[]') AS attachments
+      FROM tasks t LEFT JOIN users u ON u.id=t.assigned_to LEFT JOIN subjects s ON s.id=t.subject_id ${where}
+      ORDER BY t.due_at NULLS LAST,t.created_at DESC LIMIT 200`, values);
+    sendJson(response, 200, { tasks: result.rows }); return true;
   }
   if (request.method === "POST" && url.pathname === "/api/tasks") {
-    ensureSameOrigin(request);
-    requireRole(actor, ["developer", "admin", "teacher"]);
+    ensureSameOrigin(request); requireRole(actor, ["developer", "admin", "teacher"]);
     const body = await parseJson(request);
     const title = requiredText(body.title, "Title", 180);
     const description = requiredText(body.description, "Instructions", 10000);
     const dueAt = body.dueAt ? new Date(body.dueAt) : null;
     if (body.dueAt && Number.isNaN(dueAt.getTime())) throw new HttpError(400, "Enter a valid deadline.");
     const assignedTo = body.assignedTo ? String(body.assignedTo) : null;
-    if (assignedTo && !/^\d+$/.test(assignedTo)) throw new HttpError(400, "Choose a valid student.");
+    const assignedRole = assignedTo ? (actor.role === "admin" || actor.role === "developer" ? "teacher" : "student") : null;
     if (assignedTo) {
-      const student = await pool.query("SELECT id FROM users WHERE id = $1 AND role = 'student' AND active = TRUE", [assignedTo]);
-      if (!student.rowCount) throw new HttpError(400, "Tasks can only be assigned to active student accounts.");
+      if (!/^\d+$/.test(assignedTo)) throw new HttpError(400, "Choose a valid assignee.");
+      const valid = await pool.query("SELECT id FROM users WHERE id=$1 AND role=$2 AND active=TRUE", [assignedTo, assignedRole]);
+      if (!valid.rowCount) throw new HttpError(400, `Choose an active ${assignedRole} account.`);
     }
-    const created = await inTransaction(async (connection) => {
-      const result = await connection.query(
-        `INSERT INTO tasks         (title, description, due_at, assigned_to, is_global, created_by, creator_name)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
-        RETURNING id, title, description, due_at, assigned_to, is_global, created_at, creator_name`,
-        [title, description, dueAt, assignedTo, assignedTo === null, actor.id, actor.display_name],
-      );
-      await audit(connection, actor.id, "task.created", "task", result.rows[0].id);
-      return result.rows[0];
-    });
-    sendJson(response, 201, { task: created });
-    return true;
+    let subjectId = body.subjectId ? String(body.subjectId) : null;
+    if (subjectId) {
+      const subject = actor.role === "teacher"
+        ? await pool.query("SELECT id FROM subjects WHERE id=$1 AND teacher_id=$2", [subjectId, actor.id])
+        : await pool.query("SELECT id FROM subjects WHERE id=$1", [subjectId]);
+      if (!subject.rowCount) throw new HttpError(400, "Choose a valid subject.");
+      if (actor.role === "teacher" && assignedTo) {
+        const enrolled = await pool.query("SELECT 1 FROM subject_students WHERE subject_id=$1 AND student_id=$2", [subjectId, assignedTo]);
+        if (!enrolled.rowCount) throw new HttpError(400, "The selected student is not assigned to this subject.");
+      }
+    }
+    if (actor.role === "teacher" && !assignedTo && !subjectId) throw new HttpError(400, "Choose a student or assign the task to a subject.");
+    const files = Array.isArray(body.files) ? body.files : [];
+    if (files.length > 10) throw new HttpError(400, "A task can include up to 10 files.");
+    for (const file of files) {
+      if (!file || typeof file.name !== "string" || !file.name.trim() || typeof file.data !== "string") throw new HttpError(400, "One of the uploaded files is invalid.");
+      if (Buffer.byteLength(file.data, "base64") > 8 * 1024 * 1024) throw new HttpError(413, "Each attachment must be 8 MB or smaller.");
+    }
+    const connection = await pool.connect(); let created;
+    try {
+      await connection.query("BEGIN");
+      const result = await connection.query(`INSERT INTO tasks(title,description,due_at,assigned_to,assigned_role,subject_id,is_global,created_by,creator_name)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id,title,description,due_at,assigned_to,assigned_role,subject_id,is_global,created_at,creator_name`,
+        [title, description, dueAt, assignedTo, assignedRole, subjectId, assignedTo === null && subjectId === null, actor.id, actor.display_name]);
+      created = result.rows[0];
+      for (const file of files) {
+        const data = Buffer.from(file.data, "base64");
+        if (data.length > 8 * 1024 * 1024) throw new HttpError(413, "Each attachment must be 8 MB or smaller.");
+        await connection.query("INSERT INTO task_attachments(task_id,file_name,mime_type,file_size,file_data,uploaded_by) VALUES($1,$2,$3,$4,$5,$6)",
+          [created.id, path.basename(file.name).slice(0,255), String(file.type || "application/octet-stream").slice(0,150), data.length, data, actor.id]);
+      }
+      await audit(connection, actor.id, "task.created", "task", created.id); await connection.query("COMMIT");
+    } catch (error) { await connection.query("ROLLBACK"); throw error; } finally { connection.release(); }
+    sendJson(response, 201, { task: created }); return true;
+  }
+  const download = url.pathname.match(/^\/api\/task-files\/(\d+)$/);
+  if (download && request.method === "GET") {
+    const result = await pool.query(`SELECT a.file_name,a.mime_type,a.file_data,t.assigned_to,t.assigned_role,t.is_global,t.created_by,t.subject_id
+      FROM task_attachments a JOIN tasks t ON t.id=a.task_id WHERE a.id=$1`, [download[1]]);
+    if (!result.rowCount) throw new HttpError(404, "Attachment not found.");
+    const file = result.rows[0];
+    let allowed = actor.role === "admin" || actor.role === "developer" || String(file.created_by) === String(actor.id);
+    if (actor.role === "teacher" && String(file.assigned_to) === String(actor.id) && file.assigned_role === "teacher") allowed = true;
+    if (actor.role === "student" && ((file.assigned_to && String(file.assigned_to) === String(actor.id) && file.assigned_role === "student") || file.is_global || (file.subject_id && (await pool.query("SELECT 1 FROM subject_students WHERE subject_id=$1 AND student_id=$2", [file.subject_id, actor.id])).rowCount))) allowed = true;
+    if (!allowed) throw new HttpError(403, "You do not have access to this attachment.");
+    response.writeHead(200, { "Content-Type": file.mime_type, "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(file.file_name)}`, "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store" });
+    response.end(file.file_data); return true;
   }
   const match = url.pathname.match(/^\/api\/tasks\/(\d+)$/);
   if (!match) return false;
   requireRole(actor, ["developer", "admin", "teacher"]);
-  const existing = await pool.query("SELECT id, created_by FROM tasks WHERE id = $1", [match[1]]);
+  const existing = await pool.query("SELECT id,created_by FROM tasks WHERE id=$1", [match[1]]);
   if (!existing.rowCount) throw new HttpError(404, "Task not found.");
-  if (!canManageContent(actor.role, existing.rows[0].created_by, actor.id)) {
-    throw new HttpError(403, "Teachers can only modify their own tasks.");
-  }
-  if (request.method === "PATCH") {
-    ensureSameOrigin(request);
-    const body = await parseJson(request);
-    const currentResult = await pool.query(
-      "SELECT title, description, due_at, assigned_to, is_global FROM tasks WHERE id = $1",
-      [match[1]],
-    );
-    const current = currentResult.rows[0];
-    const title = body.title === undefined ? current.title : requiredText(body.title, "Title", 180);
-    const description = body.description === undefined ? current.description : requiredText(body.description, "Instructions", 10000);
-    const dueAt = body.dueAt === undefined ? current.due_at : body.dueAt ? new Date(body.dueAt) : null;
-    if (dueAt && Number.isNaN(new Date(dueAt).getTime())) throw new HttpError(400, "Enter a valid deadline.");
-    const assignedTo = body.assignedTo === undefined ? current.assigned_to : body.assignedTo ? String(body.assignedTo) : null;
-    const isGlobal = body.assignedTo === undefined ? current.is_global : assignedTo === null;
-    if (assignedTo) {
-      const student = await pool.query("SELECT id FROM users WHERE id = $1 AND role = 'student' AND active = TRUE", [assignedTo]);
-      if (!student.rowCount) throw new HttpError(400, "Tasks can only be assigned to active student accounts.");
-    }
-    const updated = await inTransaction(async (connection) => {
-      const result = await connection.query(
-        `UPDATE tasks SET title = $2, description = $3, due_at = $4, assigned_to = $5,
-         is_global = $6, updated_at = NOW()
-         WHERE id = $1 RETURNING id, title, description, due_at, assigned_to, is_global, updated_at`,
-        [match[1], title, description, dueAt, assignedTo, isGlobal],
-      );
-      await audit(connection, actor.id, "task.updated", "task", match[1]);
-      return result.rows[0];
-    });
-    sendJson(response, 200, { task: updated });
-    return true;
-  }
+  if (!canManageContent(actor.role, existing.rows[0].created_by, actor.id)) throw new HttpError(403, "Teachers can only modify their own tasks.");
   if (request.method === "DELETE") {
     ensureSameOrigin(request);
-    await inTransaction(async (connection) => {
-      await connection.query("DELETE FROM tasks WHERE id = $1", [match[1]]);
-      await audit(connection, actor.id, "task.deleted", "task", match[1]);
-    });
-    sendJson(response, 200, { ok: true });
-    return true;
+    await inTransaction(async (connection) => { await connection.query("DELETE FROM tasks WHERE id=$1", [match[1]]); await audit(connection, actor.id, "task.deleted", "task", match[1]); });
+    sendJson(response, 200, { ok: true }); return true;
   }
   return false;
 }
@@ -707,6 +752,7 @@ async function handleApi(request, response, url) {
       handleUserRoutes,
       handleMessageRoutes,
       handleAnnouncementRoutes,
+      handleSubjectRoutes,
       handleTaskRoutes,
     ];
     for (const handler of handlers) {

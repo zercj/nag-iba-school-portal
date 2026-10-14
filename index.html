@@ -145,8 +145,19 @@
                   <label class="login-field" for="task-due">Due date<input id="task-due" name="dueAt" type="datetime-local" /></label>
                   <label class="login-field" for="task-assignee">Assign to<select id="task-assignee" name="assignedTo"></select></label>
                 </div>
-                <div class="form-actions"><span class="form-hint">Choose “All students” to share broadly.</span><button class="button button-primary" type="submit">Assign task</button></div>
+                <label class="login-field" for="task-subject">Subject / class (optional)<select id="task-subject" name="subjectId"><option value="">No subject</option></select></label>
+                <label class="login-field" for="task-files">Attachments (any file type, up to 10 files; 8 MB each)<input id="task-files" name="files" type="file" multiple /></label>
+                <div class="form-actions"><span class="form-hint" id="task-form-hint">Admins assign tasks to teachers; teachers assign work to students.</span><button class="button button-primary" type="submit">Assign task</button></div>
               </form>
+            </section>
+            <section class="panel compose-panel" id="subject-compose-panel" hidden>
+              <div class="panel-heading"><div><h2>Create a subject / class</h2><p>Create your class and assign students enrolled in it.</p></div></div>
+              <form id="subject-form" class="portal-form">
+                <div class="form-row"><label class="login-field" for="subject-name">Subject name<input id="subject-name" name="name" maxlength="160" required /></label><label class="login-field" for="subject-code">Subject code (optional)<input id="subject-code" name="code" maxlength="40" /></label></div>
+                <label class="login-field" for="subject-description">Description (optional)<textarea id="subject-description" name="description" rows="2" maxlength="2000"></textarea></label>
+                <div class="form-actions"><span class="form-hint">Only you can manage the subjects you create.</span><button class="button button-primary" type="submit">Create subject</button></div>
+              </form>
+              <div id="subject-list" class="content-feed"></div>
             </section>
             <div id="task-list" class="content-feed"></div>
           </section>
