@@ -24,6 +24,9 @@ let announcements = [];
 let tasks = [];
 let editingUserId = null;
 let toastTimer;
+const isStaticHost = window.location.protocol === "file:"
+  || window.location.hostname === "github.io"
+  || window.location.hostname.endsWith(".github.io");
 
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (character) => ({
   "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
@@ -49,6 +52,10 @@ async function api(path, options = {}) {
     credentials: "same-origin",
     body: options.body === undefined ? undefined : JSON.stringify(options.body),
   });
+  const contentType = response.headers.get("content-type") || "";
+  if (response.status !== 204 && !contentType.includes("application/json")) {
+    throw new Error("This website is missing its application server. Open the deployed school portal URL, not the GitHub Pages preview.");
+  }
   const payload = response.status === 204 ? {} : await response.json();
   if (!response.ok) {
     if (response.status === 401 && currentUser) showLogin();
@@ -551,12 +558,22 @@ document.querySelector("#password-form").addEventListener("submit", async (event
 });
 
 async function restoreSession() {
+  if (isStaticHost) return;
   try {
     const result = await api("/api/me");
     await loadDashboard(result.user);
   } catch (error) {
     if (error.message !== "Please sign in to continue.") setGlobalError(error.message);
   }
+}
+
+if (isStaticHost) {
+  const notice = document.querySelector("#hosting-notice");
+  notice.textContent = "This GitHub Pages preview cannot sign in or create accounts. The portal needs its application server and database to be deployed first.";
+  notice.hidden = false;
+  document.querySelectorAll("#login-form input, #login-form select, #login-form button").forEach((field) => {
+    field.disabled = true;
+  });
 }
 
 restoreSession();

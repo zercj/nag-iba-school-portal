@@ -30,6 +30,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .login-kicker { color: #1748e8; font-size: 9px; font-weight: 700; letter-spacing: 1.3px; }
 .login-card h1 { margin: 8px 0 6px; color: #1c2d45; font-size: 24px; letter-spacing: -.7px; }
 .login-intro { margin-bottom: 19px; color: #7b889a; font-size: 12px; }
+.hosting-notice { margin: 0 0 16px; padding: 11px 12px; border: 1px solid #f0e3c8; border-radius: 7px; background: #fffaf0; color: #806b46; font-size: 11px; line-height: 1.5; }
 .login-demo-note { display: grid; gap: 3px; margin-bottom: 17px; padding: 10px 11px; border: 1px solid #f0e2c5; border-radius: 7px; background: #fff9ec; color: #876a37; font-size: 10px; line-height: 1.45; }
 .login-demo-note strong { color: #866321; font-size: 10px; }
 .login-field { display: grid; gap: 6px; margin: 13px 0; color: #506078; font-size: 10px; font-weight: 600; }
