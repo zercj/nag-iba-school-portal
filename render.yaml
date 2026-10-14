@@ -3,7 +3,7 @@ services:
     name: nag-iba-school-portal
     runtime: node
     region: ohio
-    plan: starter
+    plan: free
     buildCommand: npm ci
     startCommand: npm start
     healthCheckPath: /health
@@ -13,15 +13,6 @@ services:
       - key: PGSSL
         value: "true"
       - key: DATABASE_URL
-        fromDatabase:
-          name: nag-iba-school-portal-db
-          property: connectionString
+        sync: false
       - key: BOOTSTRAP_DEVELOPERS
         sync: false
-
-databases:
-  - name: nag-iba-school-portal-db
-    databaseName: nag_iba_school_portal
-    user: nag_iba_portal
-    region: ohio
-    plan: basic-256mb
