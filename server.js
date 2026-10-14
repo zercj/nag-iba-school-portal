@@ -2,6 +2,7 @@ import { createHash, randomBytes, scrypt as scryptCallback, timingSafeEqual } fr
 import { promisify } from "node:util";
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import pg from "pg";
@@ -52,11 +53,22 @@ if (!Number.isInteger(port) || port < 1 || port > 65535) {
   throw new Error("PORT must be an integer between 1 and 65535.");
 }
 
+
+const sslCa = process.env.PGSSL_CA_FILE
+  ? readFileSync(process.env.PGSSL_CA_FILE, "utf8")
+  : undefined;
+
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   max: 15,
-  ssl: process.env.PGSSL === "true" ? { rejectUnauthorized: true } : undefined,
+  ssl: process.env.PGSSL === "true"
+    ? {
+        rejectUnauthorized: true,
+        ...(sslCa ? { ca: sslCa } : {}),
+      }
+    : undefined,
 });
+
 pool.on("error", (error) => console.error("Unexpected PostgreSQL pool error:", error.message));
 
 function normalizeUsername(value) {
