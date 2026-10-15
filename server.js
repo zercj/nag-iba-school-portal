@@ -709,7 +709,34 @@ async function handleLessonPlanRoutes(request, response, url, actor) {
   const deleteAssignment = url.pathname.match(/^\/api\/lesson-plans\/assignments\/(\d+)$/);
   if (deleteAssignment && request.method === "DELETE") {
     ensureSameOrigin(request); requireRole(actor, admin);
-    await pool.query("DELETE FROM lesson_plan_subject_assignments WHERE id=$1", [deleteAssignment[1]]);
+    // Removing an assignment also removes its generated tasks for every term.
+    // Task-linked uploads and revision history cascade with the tasks, preventing
+    // deleted assignments from continuing to appear in progress summaries.
+    const conn = await pool.connect();
+    try {
+      await conn.query("BEGIN");
+      const assignment = await conn.query(
+        "SELECT teacher_id, subject_id FROM lesson_plan_subject_assignments WHERE id=$1 FOR UPDATE",
+        [deleteAssignment[1]]
+      );
+      if (!assignment.rowCount) throw new HttpError(404, "Teacher–subject assignment not found.");
+      const { teacher_id: teacherId, subject_id: subjectId } = assignment.rows[0];
+      await conn.query(
+        "DELETE FROM lesson_plan_generated_tasks WHERE teacher_id=$1 AND subject_id=$2",
+        [teacherId, subjectId]
+      );
+      await conn.query("DELETE FROM lesson_plan_subject_assignments WHERE id=$1", [deleteAssignment[1]]);
+      // Remove the subject record only when no other assignment or task still uses it.
+      await conn.query(`DELETE FROM subjects s WHERE s.id=$1
+        AND NOT EXISTS (SELECT 1 FROM lesson_plan_subject_assignments a WHERE a.subject_id=s.id)
+        AND NOT EXISTS (SELECT 1 FROM lesson_plan_generated_tasks t WHERE t.subject_id=s.id)`, [subjectId]);
+      await conn.query("COMMIT");
+    } catch (e) {
+      await conn.query("ROLLBACK");
+      throw e;
+    } finally {
+      conn.release();
+    }
     sendJson(response, 200, { ok: true }); return true;
   }
   const editAssignment = url.pathname.match(/^\/api\/lesson-plans\/assignments\/(\d+)$/);
