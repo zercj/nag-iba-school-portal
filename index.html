@@ -83,6 +83,7 @@
           <section class="portal-view" id="view-overview">
             <div class="section-heading"><div><h2 id="welcome-heading">Welcome</h2><p>Your school workspace at a glance.</p></div></div>
             <div id="overview-stats" class="overview-stats"></div>
+            <section class="panel" id="lp-dashboard-notifications" hidden><div class="panel-heading"><div><h2>Lesson Plan Notifications</h2><p id="lp-notification-summary">Lesson-plan tasks and review updates.</p></div><button class="text-button" type="button" data-go-view="lesson-plans">Open Lesson Plans</button></div><div id="lp-notification-list" class="feed-list"></div></section>
             <div class="overview-columns">
               <section class="panel">
                 <div class="panel-heading"><div><h2>Latest announcements</h2><p>Updates from your school</p></div><button class="text-button" type="button" data-go-view="announcements">All announcements</button></div>
@@ -176,19 +177,15 @@
               <div class="table-scroll"><table class="data-table"><thead><tr><th>Teacher</th><th>Subjects</th><th>Tasks</th><th>Submitted</th><th>Approved</th><th>Progress</th></tr></thead><tbody id="lp-teacher-progress"></tbody></table></div>
             </section>
             <section class="panel compose-panel" id="lesson-plan-admin-panel" hidden>
-              <div class="panel-heading"><div><h2>Lesson-plan schedule</h2><p>Configure the three terms, assign subjects to teachers, then generate the daily upload tasks.</p></div></div>
-              <form id="lp-settings-form" class="portal-form">
-                <div class="form-row"><label class="login-field">Term 1 weeks<input type="number" min="1" max="52" id="lp-t1-weeks" required></label><label class="login-field">Days per week<input type="number" min="1" max="7" id="lp-t1-days" required></label><label class="login-field">Term 1 start date<input type="date" id="lp-t1-start" required></label></div>
-                <div class="form-row"><label class="login-field">Term 2 weeks<input type="number" min="1" max="52" id="lp-t2-weeks" required></label><label class="login-field">Days per week<input type="number" min="1" max="7" id="lp-t2-days" required></label><label class="login-field">Term 2 start date<input type="date" id="lp-t2-start" required></label></div>
-                <div class="form-row"><label class="login-field">Term 3 weeks<input type="number" min="1" max="52" id="lp-t3-weeks" required></label><label class="login-field">Days per week<input type="number" min="1" max="7" id="lp-t3-days" required></label><label class="login-field">Term 3 start date<input type="date" id="lp-t3-start" required></label></div>
-                <div class="form-actions"><span class="form-hint">Changes apply to newly generated tasks. Existing tasks are retained.</span><button class="button button-primary" type="submit">Save term settings</button></div>
+              <div class="panel-heading"><div><h2>Manually create a lesson-plan calendar</h2><p>Select one term, choose a teacher, type the subject, and enter the required weeks and days. Only this teacher and subject will be generated.</p></div></div>
+              <form id="lp-generate-form" class="portal-form">
+                <div class="form-row"><label class="login-field" for="lp-generate-term">Term<select id="lp-generate-term" required><option value="1">Term 1</option><option value="2">Term 2</option><option value="3">Term 3</option></select></label><label class="login-field" for="lp-teacher">Teacher<select id="lp-teacher" required></select></label></div>
+                <div class="form-row"><label class="login-field" for="lp-subject">Subject<input id="lp-subject" name="subjectName" type="text" maxlength="160" placeholder="Type subject name" required /></label><label class="login-field" for="lp-weeks">Number of weeks<input id="lp-weeks" type="number" min="1" max="52" value="10" required /></label><label class="login-field" for="lp-days">Days per week<input id="lp-days" type="number" min="1" max="7" value="5" required /></label></div>
+                <label class="login-field" for="lp-start-date">First lesson-plan date<input id="lp-start-date" type="date" required /></label>
+                <div class="form-actions"><span class="form-hint">Creates one upload task for every day in the selected term, for the selected teacher and subject only.</span><button class="button button-primary" type="submit">Generate calendar</button></div>
               </form>
-              <form id="lp-assignment-form" class="portal-form">
-                <div class="form-row"><label class="login-field" for="lp-teacher">Teacher<select id="lp-teacher" required></select></label><label class="login-field" for="lp-subject">Subject name<input id="lp-subject" name="subjectName" type="text" maxlength="160" placeholder="Type the subject name" required /></label></div>
-                <div class="form-actions"><span class="form-hint">Assign subjects before generating lesson-plan tasks.</span><button class="button button-primary" type="submit">Assign subject</button></div>
-              </form>
+              <div class="panel-heading"><div><h2>Assigned teacher-subjects</h2><p>Existing assignments and calendars are retained.</p></div></div>
               <div id="lp-assignment-list" class="content-feed"></div>
-              <form id="lp-generate-form" class="portal-form"><label class="login-field">Generate tasks for<select id="lp-generate-term"><option value="1">Term 1</option><option value="2">Term 2</option><option value="3">Term 3</option></select></label><div class="form-actions"><span class="form-hint">Tasks are generated for every assigned teacher and subject.</span><button class="button button-primary" type="submit">Generate lesson-plan tasks</button></div></form>
             </section>
             <section class="panel compose-panel" id="lesson-plan-task-panel">
               <div class="panel-heading"><div><h2>Lesson-plan uploads</h2><p>Choose a term to view your required lesson plans or review teacher submissions.</p></div></div>

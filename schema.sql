@@ -160,7 +160,7 @@ CREATE TABLE IF NOT EXISTS lesson_plan_uploads (
   mime_type TEXT NOT NULL DEFAULT 'application/octet-stream',
   file_size BIGINT NOT NULL,
   file_data BYTEA NOT NULL,
-  status TEXT NOT NULL DEFAULT 'Submitted' CHECK(status IN ('Submitted','Approved','For Revision')),
+  status TEXT NOT NULL DEFAULT 'Submitted' CHECK(status IN ('Submitted','Late','Approved','For Revision')),
   admin_feedback TEXT NOT NULL DEFAULT '',
   submitted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   reviewed_by BIGINT REFERENCES users(id) ON DELETE SET NULL,
@@ -169,3 +169,27 @@ CREATE TABLE IF NOT EXISTS lesson_plan_uploads (
 );
 CREATE INDEX IF NOT EXISTS lp_generated_teacher_idx ON lesson_plan_generated_tasks(teacher_id,term_number,week_number,day_number);
 CREATE INDEX IF NOT EXISTS lp_upload_status_idx ON lesson_plan_uploads(status,submitted_at DESC);
+
+-- Preserve every uploaded version so administrators can inspect revisions.
+CREATE TABLE IF NOT EXISTS lesson_plan_upload_versions (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  task_id BIGINT NOT NULL REFERENCES lesson_plan_generated_tasks(id) ON DELETE CASCADE,
+  teacher_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  file_name TEXT NOT NULL,
+  mime_type TEXT NOT NULL DEFAULT 'application/pdf',
+  file_size BIGINT NOT NULL,
+  file_data BYTEA NOT NULL,
+  status TEXT NOT NULL,
+  admin_feedback TEXT NOT NULL DEFAULT '',
+  submitted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  version_number INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS lp_upload_versions_task_idx ON lesson_plan_upload_versions(task_id,version_number DESC);
+
+-- Upgrade an existing deployment whose status check predates late submissions.
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'lesson_plan_uploads_status_check') THEN
+    ALTER TABLE lesson_plan_uploads DROP CONSTRAINT lesson_plan_uploads_status_check;
+  END IF;
+  ALTER TABLE lesson_plan_uploads ADD CONSTRAINT lesson_plan_uploads_status_check CHECK(status IN ('Submitted','Late','Approved','For Revision'));
+END $$;

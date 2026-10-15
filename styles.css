@@ -355,3 +355,15 @@ h1, h2 { font-family: Manrope, "Segoe UI", sans-serif; }
 #subject-list { margin-top: 18px; }
 #subject-list select[multiple] { min-height: 120px; }
 #task-files { padding: 12px; background: #f8fafc; }
+
+
+/* Lesson-plan calendar */
+.calendar-week { margin-top: 1rem; }
+.calendar-days { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1rem; }
+.calendar-day { border: 1px solid var(--border, #d9e0e7); border-radius: 12px; padding: 1rem; min-width: 0; }
+.calendar-day-late { border-color: #d97706; background: color-mix(in srgb, #f59e0b 7%, transparent); }
+.calendar-day h4 { margin: 0; }
+.calendar-day .lp-upload-form, .calendar-day .lp-review-form { display: grid; gap: .75rem; margin-top: .75rem; }
+.calendar-day details { margin-top: .75rem; }
+.calendar-day details summary { cursor: pointer; font-weight: 600; }
+.calendar-day .attachment-list { overflow-wrap: anywhere; }
