@@ -374,3 +374,26 @@ h1, h2 { font-family: Manrope, "Segoe UI", sans-serif; }
 .term-filter-panel { margin-bottom: 1rem; }
 .term-filter-panel .login-field { max-width: 320px; }
 #lp-task-detail-heading { margin: 0; }
+
+/* Compact, progressive-disclosure lesson-plan workspace */
+.lp-teacher-subject { border: 1px solid var(--border, #d9e0e7); border-radius: 12px; background: var(--surface, #fff); margin: .55rem 0; overflow: hidden; }
+.lp-teacher-subject > summary { cursor: pointer; display: flex; align-items: center; justify-content: space-between; gap: .75rem; padding: .8rem 1rem; font-weight: 700; list-style-position: inside; }
+.lp-teacher-subject > summary small, .lp-teacher-week > summary small { color: var(--muted, #64748b); font-weight: 500; }
+.lp-teacher-weeks { padding: 0 .65rem .65rem; }
+.lp-teacher-week { border: 1px solid var(--border, #d9e0e7); border-radius: 9px; margin: .45rem 0; overflow: hidden; }
+.lp-teacher-week > summary { cursor: pointer; display: flex; justify-content: space-between; gap: .75rem; padding: .65rem .8rem; font-weight: 600; background: color-mix(in srgb, var(--border, #d9e0e7) 18%, transparent); }
+.lp-teacher-week .calendar-week { margin: 0; padding: .65rem; border: 0; box-shadow: none; }
+.lp-teacher-week .calendar-days { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: .55rem; }
+.lp-teacher-week .calendar-day { padding: .7rem; border-radius: 9px; }
+.lp-teacher-week .login-field { gap: .35rem; font-size: .85rem; }
+.lp-teacher-week input[type=file] { font-size: .8rem; padding: .45rem; }
+.lp-teacher-week .button { padding: .5rem .7rem; min-height: 36px; font-size: .85rem; }
+.lp-assignment-card { padding: .8rem 1rem; }
+.lp-assignment-card .content-card-heading { align-items: flex-start; gap: .8rem; }
+.lp-assignment-card .content-card-heading h3 { margin: 0 0 .2rem; font-size: .98rem; }
+.lp-assignment-edit { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: .75rem; margin-top: .9rem; padding-top: .8rem; border-top: 1px solid var(--border, #d9e0e7); }
+.lp-assignment-edit[hidden] { display: none; }
+.lp-assignment-edit .form-actions { grid-column: 1 / -1; }
+.lp-assignment-card .row-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
+.lp-assignment-card .danger-link { color: #b42318; }
+@media (max-width: 640px) { .lp-teacher-subject > summary { align-items: flex-start; flex-direction: column; } .lp-assignment-card .content-card-heading { flex-direction: column; } }

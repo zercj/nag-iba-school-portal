@@ -279,13 +279,15 @@ function renderTasks() {
 let lessonPlanTasks = [];
 let lessonPlanAssignments = [];
 let selectedLpSubject = null;
+let selectedLpTeacherId = null;
+let selectedLpSubjectId = null;
 function isLpAdmin() { return ["admin","developer"].includes(currentUser?.role); }
 function renderLessonPlanTasks() {
   const admin=isLpAdmin();
   const panel=document.querySelector("#lesson-plan-task-panel");
   const host=document.querySelector(admin ? "#lesson-plan-task-list" : "#lp-teacher-task-list");
   if (!host) return;
-  const visibleTasks=admin ? lessonPlanTasks.filter(t=>selectedLpSubject && t.subject_name===selectedLpSubject) : lessonPlanTasks;
+  const visibleTasks=admin ? lessonPlanTasks.filter(t=> selectedLpTeacherId!=null ? (String(t.teacher_id)===String(selectedLpTeacherId) && (selectedLpSubjectId==null || String(t.subject_id)===String(selectedLpSubjectId))) : (selectedLpSubject && t.subject_name===selectedLpSubject && (selectedLpSubjectId==null || String(t.subject_id)===String(selectedLpSubjectId)))) : lessonPlanTasks;
   if (admin && panel) panel.hidden=!selectedLpSubject;
   const grouped=new Map();
   for (const t of visibleTasks) {
@@ -293,14 +295,20 @@ function renderLessonPlanTasks() {
     if(!grouped.has(key)) grouped.set(key,{subject:t.subject_name,week:t.week_number,tasks:[]});
     grouped.get(key).tasks.push(t);
   }
-  host.innerHTML=visibleTasks.length ? [...grouped.values()].map(group=>`<section class="panel calendar-week"><div class="panel-heading"><div><h3>${escapeHtml(group.subject)} · Week ${group.week}</h3><p>Daily lesson-plan calendar</p></div></div><div class="calendar-days">${group.tasks.map(t=>{
+  const weekMarkup=visibleTasks.length ? [...grouped.values()].map(group=>`<section class="panel calendar-week"><div class="panel-heading"><div><h3>${escapeHtml(group.subject)} · Week ${group.week}</h3><p>Daily lesson-plan calendar</p></div></div><div class="calendar-days">${group.tasks.map(t=>{
     const submitted=!!t.upload_id;
     const late=String(t.status||"").toLowerCase()==="late" || String(t.status||"").toLowerCase()==="overdue";
     const controls=admin
       ? (submitted ? `<div class="attachment-list"><a class="action-link" href="/api/lesson-plans/uploads/${t.upload_id}/file" target="_blank" rel="noopener">Open PDF: ${escapeHtml(t.file_name)}</a><p>Status: <strong>${escapeHtml(t.status)}</strong>${t.admin_feedback ? ` · ${escapeHtml(t.admin_feedback)}` : ""}</p><p>Submitted: ${formatDate(t.submitted_at)}${Number(t.revision_count)>0 ? ` · ${t.revision_count} earlier revision(s)` : ""}</p><form class="lp-review-form" data-upload-id="${t.upload_id}"><select name="status"><option>Approved</option><option>For Revision</option></select><input name="feedback" maxlength="2000" placeholder="Revision notes / admin feedback" value="${escapeHtml(t.admin_feedback||"")}"><button class="button button-primary" type="submit">Save review</button></form>${Number(t.revision_count)>0 ? `<details><summary>View previous revisions (${t.revision_count})</summary><div class="lp-history" data-history-task="${t.id}">Loading revision history…</div></details>` : ""}</div>` : `<p>Status: <strong>${escapeHtml(t.status)}</strong></p><small>Waiting for teacher upload.</small>`)
       : `<form class="lp-upload-form" data-task-id="${t.id}"><label class="login-field">Upload lesson plan (PDF only, max 8 MB)<input type="file" name="file" accept="application/pdf,.pdf" required></label><button class="button button-primary" type="submit">${submitted ? "Upload revised PDF" : "Submit daily lesson plan"}</button>${submitted ? `<p>Status: <strong>${escapeHtml(t.status)}</strong>${t.admin_feedback ? ` · Admin feedback: ${escapeHtml(t.admin_feedback)}` : ""}</p><small>Submitted: ${formatDate(t.submitted_at)}</small>` : `<p>Status: <strong>${escapeHtml(t.status)}</strong></p>`}</form>`;
     return `<article class="calendar-day ${late?"calendar-day-late":""}"><div class="content-card-heading"><h4>Day ${t.day_number}</h4><span class="deadline-chip">Due ${formatDate(t.due_date)}</span></div>${admin?`<small>Teacher: ${escapeHtml(t.teacher_name)}</small>`:""}${controls}</article>`;
-  }).join("")}</div></section>`).join("") : emptyFeed(admin ? "No calendar entries for this term. Create a calendar using the manual form above." : "No lesson-plan calendar assigned to you for this term yet.");
+  }).join("")}</div></section>`).join("") : emptyFeed(admin ? "No calendar entries for this term and selection." : "No lesson-plan calendar assigned to you for this term yet.");
+  if(admin) host.innerHTML=weekMarkup;
+  else {
+    const bySubject=new Map();
+    for(const group of grouped.values()){ if(!bySubject.has(group.subject)) bySubject.set(group.subject,[]); bySubject.get(group.subject).push(group); }
+    host.innerHTML=bySubject.size ? [...bySubject.entries()].map(([subject,weeks])=>`<details class="lp-teacher-subject"><summary><span>${escapeHtml(subject)}</span><small>${weeks.reduce((n,w)=>n+w.tasks.length,0)} daily tasks · ${weeks.length} weeks</small></summary><div class="lp-teacher-weeks">${weeks.map(w=>`<details class="lp-teacher-week"><summary>Week ${w.week}<small>${w.tasks.filter(t=>!!t.upload_id).length}/${w.tasks.length} submitted</small></summary><section class="calendar-week"><div class="calendar-days">${w.tasks.map(t=>{ const submitted=!!t.upload_id; const late=["late","overdue"].includes(String(t.status||"").toLowerCase()); return `<article class="calendar-day ${late?"calendar-day-late":""}"><div class="content-card-heading"><h4>Day ${t.day_number}</h4><span class="deadline-chip">Due ${formatDate(t.due_date)}</span></div><form class="lp-upload-form" data-task-id="${t.id}"><label class="login-field">Upload lesson plan (PDF only, max 8 MB)<input type="file" name="file" accept="application/pdf,.pdf" required></label><button class="button button-primary" type="submit">${submitted?"Upload revised PDF":"Submit daily lesson plan"}</button><p>Status: <strong>${escapeHtml(t.status)}</strong>${t.admin_feedback?` · Admin feedback: ${escapeHtml(t.admin_feedback)}`:""}</p>${submitted?`<small>Submitted: ${formatDate(t.submitted_at)}</small>`:""}</form></article>`; }).join("")}</div></section></details>`).join("")}</div></details>`).join("") : emptyFeed("No lesson-plan calendar assigned to you for this term yet.");
+  }
   host.querySelectorAll("details[data-history-task], details").forEach(details=>{
     const wrap=details.querySelector("[data-history-task]"); if(!wrap || wrap.dataset.loaded) return;
     wrap.dataset.loaded="1";
@@ -339,7 +347,7 @@ function renderLessonPlanDashboard() {
   const pct=(g)=>g.total?Math.round(g.submitted/g.total*100):0;
   const subjectRows=group("subject_name").map(g=>`<tr class="lp-subject-row" data-lp-subject="${escapeHtml(g.name)}" tabindex="0" role="button" aria-label="Open lesson plans for ${escapeHtml(g.name)}"><td><button type="button" class="action-link" data-lp-open-subject="${escapeHtml(g.name)}">${escapeHtml(g.name)} · View plans</button></td><td>${escapeHtml([...g.teachers].join(", ")||"—")}</td><td>${g.total}</td><td>${g.submitted}</td><td>${g.approved}</td><td>${pct(g)}%</td></tr>`).join("");
   document.querySelector("#lp-subject-progress").innerHTML=subjectRows||'<tr><td colspan="6">No tasks generated for this term yet.</td></tr>';
-  const teacherRows=group("teacher_name").map(g=>`<tr><td>${escapeHtml(g.name)}</td><td>${escapeHtml([...g.subjects].join(", ")||"—")}</td><td>${g.total}</td><td>${g.submitted}</td><td>${g.approved}</td><td>${pct(g)}%</td></tr>`).join("");
+  const teacherRows=group("teacher_name").map(g=>`<tr><td><button type="button" class="action-link" data-lp-open-teacher="${escapeHtml(g.name)}">${escapeHtml(g.name)} · View plans</button></td><td>${escapeHtml([...g.subjects].join(", ")||"—")}</td><td>${g.total}</td><td>${g.submitted}</td><td>${g.approved}</td><td>${pct(g)}%</td></tr>`).join("");
   document.querySelector("#lp-teacher-progress").innerHTML=teacherRows||'<tr><td colspan="6">No teacher tasks generated for this term yet.</td></tr>';
 }
 
@@ -362,7 +370,7 @@ async function refreshLessonPlans() {
     if(prior && teachers.some(u=>String(u.id)===String(prior))) teacherSelect.value=prior;
     teacherSelect.disabled=teachers.length===0;
     document.querySelector("#lp-start-date").value ||= new Date().toISOString().slice(0,10);
-    document.querySelector("#lp-assignment-list").innerHTML=lessonPlanAssignments.length ? lessonPlanAssignments.map(a=>`<article class="content-card"><div class="content-card-heading"><h3>${escapeHtml(a.teacher_name)} · ${escapeHtml(a.subject_name)}</h3><span>${escapeHtml(a.term_count || "Assigned")}</span></div></article>`).join("") : emptyFeed("No teacher-subject assignments yet.");
+    document.querySelector("#lp-assignment-list").innerHTML=lessonPlanAssignments.length ? lessonPlanAssignments.map(a=>`<article class="content-card lp-assignment-card"><div class="content-card-heading"><div><h3>${escapeHtml(a.teacher_name)} · ${escapeHtml(a.subject_name)}</h3><small>Teacher–subject assignment</small></div><div class="row-actions"><button type="button" class="button button-secondary" data-lp-edit="${a.id}">Edit</button><button type="button" class="action-link danger-link" data-lp-remove="${a.id}">Delete</button><button type="button" class="action-link" data-lp-assignment-open="${a.teacher_id}|${a.subject_id}|${escapeHtml(a.subject_name)}">View plans</button></div></div><form class="lp-assignment-edit" data-lp-edit-form="${a.id}" hidden><label class="login-field">Teacher<select name="teacherId" required>${teachers.map(u=>`<option value="${u.id}" ${String(u.id)===String(a.teacher_id)?"selected":""}>${escapeHtml(u.displayName)}</option>`).join("")}</select></label><label class="login-field">Subject name<input name="subjectName" maxlength="160" required value="${escapeHtml(a.subject_name)}"></label><div class="form-actions"><button class="button button-primary" type="submit">Save changes</button><button class="button button-secondary" type="button" data-lp-cancel-edit="${a.id}">Cancel</button></div><small>Changing the teacher or subject updates this assignment and its generated tasks. Uploaded files and revision history are retained.</small></form></article>`).join("") : emptyFeed("No teacher-subject assignments yet.");
     if (!isLpAdmin()) renderLessonPlanTasks();
     else if (selectedLpSubject) renderLessonPlanTasks();
     else { document.querySelector("#lesson-plan-task-panel").hidden=true; document.querySelector("#lesson-plan-task-list").innerHTML=""; }
@@ -748,7 +756,7 @@ document.querySelector("#lp-subject-progress").addEventListener("click",(event)=
   const row=event.target.closest("[data-lp-subject]");
   const subject=trigger?.dataset.lpOpenSubject || row?.dataset.lpSubject;
   if(!subject)return;
-  selectedLpSubject=subject;
+  selectedLpSubject=subject; selectedLpTeacherId=null; selectedLpSubjectId=null;
   document.querySelector("#lp-task-detail-heading").textContent=`${subject} · Term ${document.querySelector("#lp-view-term").value}`;
   document.querySelector("#lesson-plan-task-panel").hidden=false;
   renderLessonPlanTasks();
@@ -759,14 +767,17 @@ document.querySelector("#lp-subject-progress").addEventListener("keydown",(event
   const row=event.target.closest("[data-lp-subject]"); if(!row)return;
   event.preventDefault(); row.querySelector("[data-lp-open-subject]")?.click();
 });
-document.querySelector("#lp-close-details").addEventListener("click",()=>{selectedLpSubject=null;document.querySelector("#lesson-plan-task-panel").hidden=true;});
+document.querySelector("#lp-close-details").addEventListener("click",()=>{selectedLpSubject=null;selectedLpTeacherId=null;selectedLpSubjectId=null;document.querySelector("#lesson-plan-task-panel").hidden=true;});
+document.querySelector("#lp-teacher-progress").addEventListener("click",(event)=>{const b=event.target.closest("[data-lp-open-teacher]");if(!b)return;const teacherName=b.dataset.lpOpenTeacher;const match=lessonPlanTasks.find(t=>t.teacher_name===teacherName);if(!match)return;selectedLpSubject=match.subject_name;selectedLpTeacherId=match.teacher_id;selectedLpSubjectId=null;document.querySelector("#lp-task-detail-heading").textContent=`${teacherName} · ${match.subject_name} · Term ${document.querySelector("#lp-view-term").value}`;document.querySelector("#lesson-plan-task-panel").hidden=false;renderLessonPlanTasks();document.querySelector("#lesson-plan-task-panel").scrollIntoView({behavior:"smooth",block:"start"});});
 document.querySelector("#lp-assignment-list").addEventListener("click",async(event)=>{
-  const button=event.target.closest("[data-lp-remove]"); if(!button)return;
-  if(!confirm("Remove this teacher-subject assignment? Existing generated tasks are retained."))return;
-  try { await api(`/api/lesson-plans/assignments/${button.dataset.lpRemove}`,{method:"DELETE"}); await refreshLessonPlans(); showToast("Assignment removed."); }
-  catch(e){setGlobalError(e.message);}
+  const edit=event.target.closest("[data-lp-edit]");
+  if(edit){const form=document.querySelector(`[data-lp-edit-form="${edit.dataset.lpEdit}"]`);if(form)form.hidden=!form.hidden;return;}
+  const cancel=event.target.closest("[data-lp-cancel-edit]");if(cancel){const form=document.querySelector(`[data-lp-edit-form="${cancel.dataset.lpCancelEdit}"]`);if(form)form.hidden=true;return;}
+  const open=event.target.closest("[data-lp-assignment-open]");if(open){const [teacherId,subjectId,subject]=open.dataset.lpAssignmentOpen.split("|");selectedLpSubject=subject;selectedLpTeacherId=teacherId;selectedLpSubjectId=subjectId;document.querySelector("#lp-task-detail-heading").textContent=`${subject} · Term ${document.querySelector("#lp-view-term").value}`;document.querySelector("#lesson-plan-task-panel").hidden=false;renderLessonPlanTasks();document.querySelector("#lesson-plan-task-panel").scrollIntoView({behavior:"smooth",block:"start"});return;}
+  const remove=event.target.closest("[data-lp-remove]");if(remove){if(!confirm("Delete this teacher–subject assignment? Existing generated tasks and submitted files will remain accessible in progress."))return;try{await api(`/api/lesson-plans/assignments/${remove.dataset.lpRemove}`,{method:"DELETE"});await refreshLessonPlans();showToast("Assignment deleted.");}catch(e){setGlobalError(e.message);} }
 });
-document.querySelector("#lesson-plan-task-list").addEventListener("submit",async(event)=>{
+document.querySelector("#lp-assignment-list").addEventListener("submit",async(event)=>{const form=event.target.closest("[data-lp-edit-form]");if(!form)return;event.preventDefault();const data=new FormData(form);try{await api(`/api/lesson-plans/assignments/${form.dataset.lpEdit}`,{method:"PUT",body:{teacherId:Number(data.get("teacherId")),subjectName:String(data.get("subjectName")).trim()}});await refreshLessonPlans();showToast("Teacher–subject assignment updated.");}catch(e){setGlobalError(e.message);}});
+document.querySelector("#view-lesson-plans").addEventListener("submit",async(event)=>{
   const uploadForm=event.target.closest(".lp-upload-form");
   const reviewForm=event.target.closest(".lp-review-form");
   if(uploadForm){

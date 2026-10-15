@@ -712,6 +712,30 @@ async function handleLessonPlanRoutes(request, response, url, actor) {
     await pool.query("DELETE FROM lesson_plan_subject_assignments WHERE id=$1", [deleteAssignment[1]]);
     sendJson(response, 200, { ok: true }); return true;
   }
+  const editAssignment = url.pathname.match(/^\/api\/lesson-plans\/assignments\/(\d+)$/);
+  if (editAssignment && request.method === "PUT") {
+    ensureSameOrigin(request); requireRole(actor, admin);
+    const body = await parseJson(request), assignmentId = Number(editAssignment[1]), teacherId = Number(body.teacherId);
+    const subjectName = String(body.subjectName || "").trim();
+    if (!Number.isInteger(teacherId) || teacherId < 1 || !subjectName || subjectName.length > 160) throw new HttpError(400, "Choose an active teacher and enter a subject name of 1–160 characters.");
+    const conn = await pool.connect();
+    try {
+      await conn.query("BEGIN");
+      const existing = await conn.query(`SELECT a.id,a.teacher_id,a.subject_id,s.name AS subject_name FROM lesson_plan_subject_assignments a JOIN subjects s ON s.id=a.subject_id WHERE a.id=$1 FOR UPDATE`, [assignmentId]);
+      if (!existing.rowCount) throw new HttpError(404, "Teacher–subject assignment not found.");
+      const targetTeacher = await conn.query("SELECT id FROM users WHERE id=$1 AND role='teacher' AND active=TRUE", [teacherId]);
+      if (!targetTeacher.rowCount) throw new HttpError(400, "Choose an active user whose role is Teacher.");
+      const current = existing.rows[0];
+      const duplicate = await conn.query(`SELECT 1 FROM lesson_plan_subject_assignments a JOIN subjects s ON s.id=a.subject_id WHERE a.id<>$1 AND a.teacher_id=$2 AND LOWER(s.name)=LOWER($3)`, [assignmentId,teacherId,subjectName]);
+      if (duplicate.rowCount) throw new HttpError(409, "That teacher already has an assignment with this subject name.");
+      await conn.query(`UPDATE subjects SET name=$1,teacher_id=$2 WHERE id=$3`, [subjectName,teacherId,current.subject_id]);
+      await conn.query(`UPDATE lesson_plan_subject_assignments SET teacher_id=$1 WHERE id=$2`, [teacherId,assignmentId]);
+      await conn.query(`UPDATE lesson_plan_generated_tasks SET teacher_id=$1 WHERE subject_id=$2 AND teacher_id=$3`, [teacherId,current.subject_id,current.teacher_id]);
+      await conn.query(`UPDATE lesson_plan_uploads SET teacher_id=$1 WHERE task_id IN (SELECT id FROM lesson_plan_generated_tasks WHERE subject_id=$2)`, [teacherId,current.subject_id]);
+      await conn.query("COMMIT");
+    } catch(e) { await conn.query("ROLLBACK"); throw e; } finally { conn.release(); }
+    sendJson(response, 200, { ok: true }); return true;
+  }
   if (url.pathname === "/api/lesson-plans/generate" && request.method === "POST") {
     ensureSameOrigin(request); requireRole(actor, admin);
     const body = await parseJson(request);

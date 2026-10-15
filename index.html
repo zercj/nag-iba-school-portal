@@ -170,11 +170,11 @@
             <section class="panel term-filter-panel"><label class="login-field" for="lp-view-term">Selected term<select id="lp-view-term"><option value="1">Term 1</option><option value="2">Term 2</option><option value="3">Term 3</option></select></label></section>
             <div id="lp-dashboard-stats" class="overview-stats"></div>
             <section class="panel" id="lp-progress-panel" hidden>
-              <div class="panel-heading"><div><h2>Progress by subject</h2><p>Select a subject row to open all daily lesson plans and teacher submissions for the selected term.</p></div></div>
+              <div class="panel-heading"><div><h2>Progress by subject</h2><p>Choose a subject to open its daily tasks and submissions. Details stay hidden until selected.</p></div></div>
               <div class="table-scroll"><table class="data-table"><thead><tr><th>Subject</th><th>Teacher(s)</th><th>Tasks</th><th>Submitted</th><th>Approved</th><th>Progress</th></tr></thead><tbody id="lp-subject-progress"></tbody></table></div>
             </section>
             <section class="panel" id="lp-teacher-progress-panel" hidden>
-              <div class="panel-heading"><div><h2>Progress by teacher</h2><p>Track each teacher's lesson-plan submissions for the selected term.</p></div></div>
+              <div class="panel-heading"><div><h2>Progress by teacher</h2><p>Choose a teacher first to open their subjects and lesson-plan submissions for the selected term.</p></div></div>
               <div class="table-scroll"><table class="data-table"><thead><tr><th>Teacher</th><th>Subjects</th><th>Tasks</th><th>Submitted</th><th>Approved</th><th>Progress</th></tr></thead><tbody id="lp-teacher-progress"></tbody></table></div>
             </section>
             <section class="panel compose-panel" id="lesson-plan-admin-panel" hidden>
@@ -189,7 +189,7 @@
               <div id="lp-assignment-list" class="content-feed"></div>
             </section>
             <section class="panel compose-panel" id="lesson-plan-task-panel" hidden>
-              <div class="panel-heading"><div><h2 id="lp-task-detail-heading">Lesson-plan details</h2><p>Daily upload tasks, submitted PDFs, approval status, feedback, and revision history for the selected subject.</p></div><button type="button" class="button button-secondary" id="lp-close-details">Close details</button></div>
+              <div class="panel-heading"><div><h2 id="lp-task-detail-heading">Lesson-plan details</h2><p>Daily tasks, submitted PDFs, approval status, feedback, and revision history for the selected teacher and subject.</p></div><button type="button" class="button button-secondary" id="lp-close-details">Close details</button></div>
               <div id="lesson-plan-task-list" class="content-feed"></div>
             </section>
             <div id="lp-teacher-task-list" class="content-feed"></div>
