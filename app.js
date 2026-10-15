@@ -278,18 +278,22 @@ function renderTasks() {
 
 let lessonPlanTasks = [];
 let lessonPlanAssignments = [];
+let selectedLpSubject = null;
 function isLpAdmin() { return ["admin","developer"].includes(currentUser?.role); }
 function renderLessonPlanTasks() {
-  const host=document.querySelector("#lesson-plan-task-list");
-  if (!host) return;
   const admin=isLpAdmin();
+  const panel=document.querySelector("#lesson-plan-task-panel");
+  const host=document.querySelector(admin ? "#lesson-plan-task-list" : "#lp-teacher-task-list");
+  if (!host) return;
+  const visibleTasks=admin ? lessonPlanTasks.filter(t=>selectedLpSubject && t.subject_name===selectedLpSubject) : lessonPlanTasks;
+  if (admin && panel) panel.hidden=!selectedLpSubject;
   const grouped=new Map();
-  for (const t of lessonPlanTasks) {
+  for (const t of visibleTasks) {
     const key=`${t.subject_name}||${t.week_number}`;
     if(!grouped.has(key)) grouped.set(key,{subject:t.subject_name,week:t.week_number,tasks:[]});
     grouped.get(key).tasks.push(t);
   }
-  host.innerHTML=lessonPlanTasks.length ? [...grouped.values()].map(group=>`<section class="panel calendar-week"><div class="panel-heading"><div><h3>${escapeHtml(group.subject)} · Week ${group.week}</h3><p>Daily lesson-plan calendar</p></div></div><div class="calendar-days">${group.tasks.map(t=>{
+  host.innerHTML=visibleTasks.length ? [...grouped.values()].map(group=>`<section class="panel calendar-week"><div class="panel-heading"><div><h3>${escapeHtml(group.subject)} · Week ${group.week}</h3><p>Daily lesson-plan calendar</p></div></div><div class="calendar-days">${group.tasks.map(t=>{
     const submitted=!!t.upload_id;
     const late=String(t.status||"").toLowerCase()==="late" || String(t.status||"").toLowerCase()==="overdue";
     const controls=admin
@@ -333,7 +337,7 @@ function renderLessonPlanDashboard() {
     return [...map.values()];
   };
   const pct=(g)=>g.total?Math.round(g.submitted/g.total*100):0;
-  const subjectRows=group("subject_name").map(g=>`<tr><td>${escapeHtml(g.name)}</td><td>${escapeHtml([...g.teachers].join(", ")||"—")}</td><td>${g.total}</td><td>${g.submitted}</td><td>${g.approved}</td><td>${pct(g)}%</td></tr>`).join("");
+  const subjectRows=group("subject_name").map(g=>`<tr class="lp-subject-row" data-lp-subject="${escapeHtml(g.name)}" tabindex="0" role="button" aria-label="Open lesson plans for ${escapeHtml(g.name)}"><td><button type="button" class="action-link" data-lp-open-subject="${escapeHtml(g.name)}">${escapeHtml(g.name)} · View plans</button></td><td>${escapeHtml([...g.teachers].join(", ")||"—")}</td><td>${g.total}</td><td>${g.submitted}</td><td>${g.approved}</td><td>${pct(g)}%</td></tr>`).join("");
   document.querySelector("#lp-subject-progress").innerHTML=subjectRows||'<tr><td colspan="6">No tasks generated for this term yet.</td></tr>';
   const teacherRows=group("teacher_name").map(g=>`<tr><td>${escapeHtml(g.name)}</td><td>${escapeHtml([...g.subjects].join(", ")||"—")}</td><td>${g.total}</td><td>${g.submitted}</td><td>${g.approved}</td><td>${pct(g)}%</td></tr>`).join("");
   document.querySelector("#lp-teacher-progress").innerHTML=teacherRows||'<tr><td colspan="6">No teacher tasks generated for this term yet.</td></tr>';
@@ -359,7 +363,9 @@ async function refreshLessonPlans() {
     teacherSelect.disabled=teachers.length===0;
     document.querySelector("#lp-start-date").value ||= new Date().toISOString().slice(0,10);
     document.querySelector("#lp-assignment-list").innerHTML=lessonPlanAssignments.length ? lessonPlanAssignments.map(a=>`<article class="content-card"><div class="content-card-heading"><h3>${escapeHtml(a.teacher_name)} · ${escapeHtml(a.subject_name)}</h3><span>${escapeHtml(a.term_count || "Assigned")}</span></div></article>`).join("") : emptyFeed("No teacher-subject assignments yet.");
-    renderLessonPlanTasks();
+    if (!isLpAdmin()) renderLessonPlanTasks();
+    else if (selectedLpSubject) renderLessonPlanTasks();
+    else { document.querySelector("#lesson-plan-task-panel").hidden=true; document.querySelector("#lesson-plan-task-list").innerHTML=""; }
     renderLessonPlanDashboard();
   } catch(error) { setGlobalError(error.message); }
 }
@@ -730,12 +736,30 @@ document.querySelector("#lp-generate-form").addEventListener("submit", async (ev
   try {
     const result=await api("/api/lesson-plans/generate",{method:"POST",body:{termNumber,teacherId,subjectName,weeks,daysPerWeek,startDate}});
     document.querySelector("#lp-view-term").value=String(termNumber);
+    selectedLpSubject=subjectName;
     document.querySelector("#lp-subject").value="";
     await refreshLessonPlans(); await refreshLpNotifications();
     showToast(`Term ${termNumber}: created/updated ${result.generatedOrUpdated} daily lesson-plan tasks.`);
   } catch(e){setGlobalError(e.message);}
 });
-document.querySelector("#lp-view-term").addEventListener("change",refreshLessonPlans);
+document.querySelector("#lp-view-term").addEventListener("change",()=>{selectedLpSubject=null; refreshLessonPlans();});
+document.querySelector("#lp-subject-progress").addEventListener("click",(event)=>{
+  const trigger=event.target.closest("[data-lp-open-subject]");
+  const row=event.target.closest("[data-lp-subject]");
+  const subject=trigger?.dataset.lpOpenSubject || row?.dataset.lpSubject;
+  if(!subject)return;
+  selectedLpSubject=subject;
+  document.querySelector("#lp-task-detail-heading").textContent=`${subject} · Term ${document.querySelector("#lp-view-term").value}`;
+  document.querySelector("#lesson-plan-task-panel").hidden=false;
+  renderLessonPlanTasks();
+  document.querySelector("#lesson-plan-task-panel").scrollIntoView({behavior:"smooth",block:"start"});
+});
+document.querySelector("#lp-subject-progress").addEventListener("keydown",(event)=>{
+  if(event.key!=="Enter" && event.key!==" ")return;
+  const row=event.target.closest("[data-lp-subject]"); if(!row)return;
+  event.preventDefault(); row.querySelector("[data-lp-open-subject]")?.click();
+});
+document.querySelector("#lp-close-details").addEventListener("click",()=>{selectedLpSubject=null;document.querySelector("#lesson-plan-task-panel").hidden=true;});
 document.querySelector("#lp-assignment-list").addEventListener("click",async(event)=>{
   const button=event.target.closest("[data-lp-remove]"); if(!button)return;
   if(!confirm("Remove this teacher-subject assignment? Existing generated tasks are retained."))return;

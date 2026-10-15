@@ -367,3 +367,10 @@ h1, h2 { font-family: Manrope, "Segoe UI", sans-serif; }
 .calendar-day details { margin-top: .75rem; }
 .calendar-day details summary { cursor: pointer; font-weight: 600; }
 .calendar-day .attachment-list { overflow-wrap: anywhere; }
+
+/* Lesson-plan progress is the admin's entry point to all subject submissions. */
+.lp-subject-row { cursor: pointer; }
+.lp-subject-row:focus { outline: 2px solid var(--accent, #3569c8); outline-offset: -2px; }
+.term-filter-panel { margin-bottom: 1rem; }
+.term-filter-panel .login-field { max-width: 320px; }
+#lp-task-detail-heading { margin: 0; }
