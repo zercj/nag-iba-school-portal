@@ -598,65 +598,10 @@ async function handleAnnouncementRoutes(request, response, url, actor) {
   return false;
 }
 
-async function handleSubjectRoutes(request, response, url, actor) {
-  if (url.pathname === "/api/subjects" && request.method === "GET") {
-    const result = actor.role === "student"
-      ? await pool.query(`SELECT s.id, s.name, s.code, s.description, s.teacher_id, u.display_name AS teacher_name,
-          COALESCE(json_agg(json_build_object('id', st.id, 'displayName', st.display_name)) FILTER (WHERE st.id IS NOT NULL), '[]') AS students
-          FROM subjects s JOIN subject_students ss ON ss.subject_id=s.id
-          JOIN users u ON u.id=s.teacher_id LEFT JOIN subject_students sx ON sx.subject_id=s.id
-          LEFT JOIN users st ON st.id=sx.student_id WHERE ss.student_id=$1
-          GROUP BY s.id,u.display_name ORDER BY s.name`, [actor.id])
-      : actor.role === "teacher"
-        ? await pool.query(`SELECT s.id, s.name, s.code, s.description, s.teacher_id, u.display_name AS teacher_name,
-            COALESCE(json_agg(json_build_object('id', st.id, 'displayName', st.display_name)) FILTER (WHERE st.id IS NOT NULL), '[]') AS students
-            FROM subjects s JOIN users u ON u.id=s.teacher_id LEFT JOIN subject_students ss ON ss.subject_id=s.id
-            LEFT JOIN users st ON st.id=ss.student_id WHERE s.teacher_id=$1 GROUP BY s.id,u.display_name ORDER BY s.name`, [actor.id])
-        : await pool.query(`SELECT s.id, s.name, s.code, s.description, s.teacher_id, u.display_name AS teacher_name,
-            COALESCE(json_agg(json_build_object('id', st.id, 'displayName', st.display_name)) FILTER (WHERE st.id IS NOT NULL), '[]') AS students
-            FROM subjects s JOIN users u ON u.id=s.teacher_id LEFT JOIN subject_students ss ON ss.subject_id=s.id
-            LEFT JOIN users st ON st.id=ss.student_id GROUP BY s.id,u.display_name ORDER BY s.name`);
-    sendJson(response, 200, { subjects: result.rows }); return true;
-  }
-  if (url.pathname === "/api/subjects" && request.method === "POST") {
-    ensureSameOrigin(request); requireRole(actor, ["teacher"]);
-    const body = await parseJson(request);
-    const name = requiredText(body.name, "Subject name", 160);
-    const code = body.code ? requiredText(body.code, "Subject code", 40) : null;
-    const description = body.description ? requiredText(body.description, "Description", 2000) : "";
-    const result = await pool.query(`INSERT INTO subjects(name,code,description,teacher_id) VALUES($1,$2,$3,$4)
-      RETURNING id,name,code,description,teacher_id`, [name, code, description, actor.id]);
-    await pool.query("INSERT INTO audit_logs(actor_id,action,target_type,target_id) VALUES($1,'subject.created','subject',$2)", [actor.id, result.rows[0].id]);
-    sendJson(response, 201, { subject: result.rows[0] }); return true;
-  }
-  const enrollMatch = url.pathname.match(/^\/api\/subjects\/(\d+)\/students$/);
-  if (enrollMatch && request.method === "POST") {
-    ensureSameOrigin(request); requireRole(actor, ["teacher"]);
-    const body = await parseJson(request);
-    if (!Array.isArray(body.studentIds) || body.studentIds.length > 500) throw new HttpError(400, "Choose one or more students.");
-    const subject = await pool.query("SELECT id FROM subjects WHERE id=$1 AND teacher_id=$2", [enrollMatch[1], actor.id]);
-    if (!subject.rowCount) throw new HttpError(404, "Subject not found for this teacher.");
-    const connection = await pool.connect();
-    try {
-      await connection.query("BEGIN");
-      for (const id of [...new Set(body.studentIds.map(String))]) {
-        if (!/^\d+$/.test(id)) throw new HttpError(400, "Invalid student account.");
-        const student = await connection.query("SELECT id FROM users WHERE id=$1 AND role='student' AND active=TRUE", [id]);
-        if (!student.rowCount) throw new HttpError(400, "Only active student accounts can be assigned to a subject.");
-        await connection.query("INSERT INTO subject_students(subject_id,student_id) VALUES($1,$2) ON CONFLICT DO NOTHING", [enrollMatch[1], id]);
-      }
-      await connection.query("COMMIT");
-    } catch (error) { await connection.query("ROLLBACK"); throw error; } finally { connection.release(); }
-    sendJson(response, 200, { ok: true }); return true;
-  }
-  return false;
-}
-
-
 async function handleLessonPlanRoutes(request, response, url, actor) {
   const admin = ["admin", "developer"];
   if (url.pathname === "/api/lesson-plans/settings" && request.method === "GET") {
-    const result = await pool.query("SELECT term_number,weeks,days_per_week,start_date FROM lesson_plan_term_settings ORDER BY term_number");
+    const result = await pool.query("SELECT term_number,weeks,days_per_week,weekdays,start_date FROM lesson_plan_term_settings ORDER BY term_number");
     sendJson(response, 200, { settings: result.rows }); return true;
   }
   if (url.pathname === "/api/lesson-plans/settings" && request.method === "POST") {
@@ -765,44 +710,54 @@ async function handleLessonPlanRoutes(request, response, url, actor) {
     ensureSameOrigin(request); requireRole(actor, admin);
     const body = await parseJson(request);
     const term = Number(body.termNumber), teacherId = Number(body.teacherId);
-    const subjectName = String(body.subjectName || "").trim();
-    const weeks = Number(body.weeks), days = Number(body.daysPerWeek);
+    const rawSubjects = Array.isArray(body.subjectNames) ? body.subjectNames : [body.subjectName];
+    const subjectNames = [...new Map(rawSubjects.map((n) => String(n || "").trim()).filter(Boolean).map((n) => [n.toLowerCase(), n])).values()];
+    const weeks = Number(body.weeks);
+    const weekdays = [...new Set((Array.isArray(body.weekdays) ? body.weekdays : []).map(Number))].sort((x, y) => x - y);
     const startDate = String(body.startDate || "");
     if (![1,2,3].includes(term)) throw new HttpError(400, "Choose Term 1, 2, or 3.");
     if (!Number.isInteger(teacherId) || teacherId < 1) throw new HttpError(400, "Choose a teacher from the user accounts.");
-    if (!subjectName || subjectName.length > 160) throw new HttpError(400, "Type a subject name (up to 160 characters).");
-    if (!Number.isInteger(weeks) || weeks < 1 || weeks > 52 || !Number.isInteger(days) || days < 1 || days > 7) throw new HttpError(400, "Weeks must be 1–52 and days per week must be 1–7.");
+    if (!subjectNames.length || subjectNames.length > 15 || subjectNames.some((n) => n.length > 160)) throw new HttpError(400, "Enter 1–15 subject names (up to 160 characters each).");
+    if (!Number.isInteger(weeks) || weeks < 1 || weeks > 52) throw new HttpError(400, "Weeks of instruction must be 1–52.");
+    if (!weekdays.length || weekdays.some((d) => !Number.isInteger(d) || d < 1 || d > 5)) throw new HttpError(400, "Choose at least one instruction day from Monday to Friday.");
     if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate) || Number.isNaN(new Date(`${startDate}T12:00:00Z`).getTime())) throw new HttpError(400, "Choose a valid first lesson-plan date.");
     const teacher = await pool.query("SELECT id FROM users WHERE id=$1 AND role='teacher' AND active=TRUE", [teacherId]);
     if (!teacher.rowCount) throw new HttpError(400, "The selected account is not an active teacher.");
+    // Week 1 starts on the Monday of the week that contains the first lesson-plan date.
+    const first = new Date(`${startDate}T12:00:00Z`);
+    const monday = new Date(first); monday.setUTCDate(monday.getUTCDate() - ((first.getUTCDay() + 6) % 7));
     const conn = await pool.connect(); let count = 0;
     try {
       await conn.query("BEGIN");
-      await conn.query(`INSERT INTO lesson_plan_term_settings(term_number,weeks,days_per_week,start_date,updated_by,updated_at)
-        VALUES($1,$2,$3,$4,$5,NOW()) ON CONFLICT(term_number) DO UPDATE SET weeks=EXCLUDED.weeks,days_per_week=EXCLUDED.days_per_week,start_date=EXCLUDED.start_date,updated_by=EXCLUDED.updated_by,updated_at=NOW()`,
-        [term,weeks,days,startDate,actor.id]);
-      const subjectResult = await conn.query(`INSERT INTO subjects(name,teacher_id) VALUES($1,$2)
-        ON CONFLICT(teacher_id,name) DO UPDATE SET name=EXCLUDED.name RETURNING id`, [subjectName,teacherId]);
-      const subjectId = subjectResult.rows[0].id;
-      await conn.query(`INSERT INTO lesson_plan_subject_assignments(teacher_id,subject_id,assigned_by)
-        VALUES($1,$2,$3) ON CONFLICT(teacher_id,subject_id) DO UPDATE SET assigned_by=EXCLUDED.assigned_by`, [teacherId,subjectId,actor.id]);
-      for (let w=1; w<=weeks; w++) for (let d=1; d<=days; d++) {
-        const cursor = new Date(`${startDate}T12:00:00Z`);
-        let remaining = (w-1)*days+(d-1);
-        while (remaining > 0) {
-          cursor.setUTCDate(cursor.getUTCDate()+1);
-          const weekday = cursor.getUTCDay();
-          if (days >= 7 || (days === 6 ? weekday !== 0 : weekday !== 0 && weekday !== 6)) remaining--;
+      await conn.query(`INSERT INTO lesson_plan_term_settings(term_number,weeks,days_per_week,weekdays,start_date,updated_by,updated_at)
+        VALUES($1,$2,$3,$4,$5,$6,NOW()) ON CONFLICT(term_number) DO UPDATE SET weeks=EXCLUDED.weeks,days_per_week=EXCLUDED.days_per_week,weekdays=EXCLUDED.weekdays,start_date=EXCLUDED.start_date,updated_by=EXCLUDED.updated_by,updated_at=NOW()`,
+        [term,weeks,weekdays.length,weekdays.join(","),startDate,actor.id]);
+      for (const subjectName of subjectNames) {
+        const subjectResult = await conn.query(`INSERT INTO subjects(name,teacher_id) VALUES($1,$2)
+          ON CONFLICT(teacher_id,name) DO UPDATE SET name=EXCLUDED.name RETURNING id`, [subjectName,teacherId]);
+        const subjectId = subjectResult.rows[0].id;
+        await conn.query(`INSERT INTO lesson_plan_subject_assignments(teacher_id,subject_id,assigned_by)
+          VALUES($1,$2,$3) ON CONFLICT(teacher_id,subject_id) DO UPDATE SET assigned_by=EXCLUDED.assigned_by`, [teacherId,subjectId,actor.id]);
+        const keep = [];
+        for (let w = 1; w <= weeks; w++) weekdays.forEach((wd, i) => {
+          const date = new Date(monday); date.setUTCDate(date.getUTCDate() + (w - 1) * 7 + (wd - 1));
+          if (date < first) return; // days before the chosen start date are not scheduled
+          keep.push({ w, d: i + 1, due: date.toISOString().slice(0, 10) });
+        });
+        const ids = [];
+        for (const k of keep) {
+          const r = await conn.query(`INSERT INTO lesson_plan_generated_tasks(term_number,week_number,day_number,teacher_id,subject_id,due_date)
+            VALUES($1,$2,$3,$4,$5,$6::date) ON CONFLICT(term_number,week_number,day_number,teacher_id,subject_id)
+            DO UPDATE SET due_date=EXCLUDED.due_date RETURNING id`, [term,k.w,k.d,teacherId,subjectId,k.due]);
+          ids.push(r.rows[0].id); count++;
         }
-        const dueDate = cursor.toISOString().slice(0,10);
-        await conn.query(`INSERT INTO lesson_plan_generated_tasks(term_number,week_number,day_number,teacher_id,subject_id,due_date)
-          VALUES($1,$2,$3,$4,$5,$6::date) ON CONFLICT(term_number,week_number,day_number,teacher_id,subject_id)
-          DO UPDATE SET due_date=EXCLUDED.due_date`, [term,w,d,teacherId,subjectId,dueDate]);
-        count++;
+        // Re-saving a schedule drops days that are no longer instruction days, but never deletes submitted work.
+        await conn.query(`DELETE FROM lesson_plan_generated_tasks t WHERE t.term_number=$1 AND t.teacher_id=$2 AND t.subject_id=$3
+          AND NOT (t.id = ANY($4::bigint[])) AND NOT EXISTS (SELECT 1 FROM lesson_plan_uploads x WHERE x.task_id=t.id)`, [term,teacherId,subjectId,ids]);
       }
       await conn.query("COMMIT");
     } catch(e) { await conn.query("ROLLBACK"); throw e; } finally { conn.release(); }
-    sendJson(response, 200, {ok:true, termNumber:term, teacherId, subjectName, generatedOrUpdated:count}); return true;
+    sendJson(response, 200, {ok:true, termNumber:term, teacherId, subjectNames, generatedOrUpdated:count}); return true;
   }
   if (url.pathname === "/api/lesson-plans/tasks" && request.method === "GET") {
     const term = Number(url.searchParams.get("term") || 1);
@@ -936,95 +891,6 @@ async function handleLessonPlanRoutes(request, response, url, actor) {
   return false;
 }
 
-async function handleTaskRoutes(request, response, url, actor) {
-  if (request.method === "GET" && url.pathname === "/api/tasks") {
-    const where = actor.role === "student"
-      ? "WHERE (t.is_global=TRUE AND t.assigned_role IS NULL AND t.subject_id IS NULL) OR (t.assigned_to=$1 AND t.assigned_role='student') OR (t.subject_id IN (SELECT subject_id FROM subject_students WHERE student_id=$1) AND t.assigned_role IS NULL)"
-      : actor.role === "teacher" ? "WHERE (t.created_by=$1 OR t.assigned_to=$1 AND t.assigned_role='teacher')" : "";
-    const values = actor.role === "admin" || actor.role === "developer" ? [] : [actor.id];
-    const result = await pool.query(`SELECT t.id,t.title,t.description,t.due_at,t.assigned_to,t.assigned_role,t.subject_id,t.is_global,t.created_at,
-      t.creator_name,t.created_by,u.display_name AS assigned_name,s.name AS subject_name,
-      COALESCE((SELECT json_agg(json_build_object('id',a.id,'fileName',a.file_name,'mimeType',a.mime_type,'fileSize',a.file_size)) FROM task_attachments a WHERE a.task_id=t.id),'[]') AS attachments
-      FROM tasks t LEFT JOIN users u ON u.id=t.assigned_to LEFT JOIN subjects s ON s.id=t.subject_id ${where}
-      ORDER BY t.due_at NULLS LAST,t.created_at DESC LIMIT 200`, values);
-    sendJson(response, 200, { tasks: result.rows }); return true;
-  }
-  if (request.method === "POST" && url.pathname === "/api/tasks") {
-    ensureSameOrigin(request); requireRole(actor, ["developer", "admin", "teacher"]);
-    const body = await parseJson(request);
-    const title = requiredText(body.title, "Title", 180);
-    const description = requiredText(body.description, "Instructions", 10000);
-    const dueAt = body.dueAt ? new Date(body.dueAt) : null;
-    if (body.dueAt && Number.isNaN(dueAt.getTime())) throw new HttpError(400, "Enter a valid deadline.");
-    const assignedTo = body.assignedTo ? String(body.assignedTo) : null;
-    const assignedRole = assignedTo ? (actor.role === "admin" || actor.role === "developer" ? "teacher" : "student") : null;
-    if (assignedTo) {
-      if (!/^\d+$/.test(assignedTo)) throw new HttpError(400, "Choose a valid assignee.");
-      const valid = await pool.query("SELECT id FROM users WHERE id=$1 AND role=$2 AND active=TRUE", [assignedTo, assignedRole]);
-      if (!valid.rowCount) throw new HttpError(400, `Choose an active ${assignedRole} account.`);
-    }
-    let subjectId = body.subjectId ? String(body.subjectId) : null;
-    if (subjectId) {
-      const subject = actor.role === "teacher"
-        ? await pool.query("SELECT id FROM subjects WHERE id=$1 AND teacher_id=$2", [subjectId, actor.id])
-        : await pool.query("SELECT id FROM subjects WHERE id=$1", [subjectId]);
-      if (!subject.rowCount) throw new HttpError(400, "Choose a valid subject.");
-      if (actor.role === "teacher" && assignedTo) {
-        const enrolled = await pool.query("SELECT 1 FROM subject_students WHERE subject_id=$1 AND student_id=$2", [subjectId, assignedTo]);
-        if (!enrolled.rowCount) throw new HttpError(400, "The selected student is not assigned to this subject.");
-      }
-    }
-    if (actor.role === "teacher" && !assignedTo && !subjectId) throw new HttpError(400, "Choose a student or assign the task to a subject.");
-    const files = Array.isArray(body.files) ? body.files : [];
-    if (files.length > 10) throw new HttpError(400, "A task can include up to 10 files.");
-    for (const file of files) {
-      if (!file || typeof file.name !== "string" || !file.name.trim() || typeof file.data !== "string") throw new HttpError(400, "One of the uploaded files is invalid.");
-      if (Buffer.byteLength(file.data, "base64") > 8 * 1024 * 1024) throw new HttpError(413, "Each attachment must be 8 MB or smaller.");
-    }
-    const connection = await pool.connect(); let created;
-    try {
-      await connection.query("BEGIN");
-      const result = await connection.query(`INSERT INTO tasks(title,description,due_at,assigned_to,assigned_role,subject_id,is_global,created_by,creator_name)
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id,title,description,due_at,assigned_to,assigned_role,subject_id,is_global,created_at,creator_name`,
-        [title, description, dueAt, assignedTo, assignedRole, subjectId, assignedTo === null && subjectId === null, actor.id, actor.display_name]);
-      created = result.rows[0];
-      for (const file of files) {
-        const data = Buffer.from(file.data, "base64");
-        if (data.length > 8 * 1024 * 1024) throw new HttpError(413, "Each attachment must be 8 MB or smaller.");
-        await connection.query("INSERT INTO task_attachments(task_id,file_name,mime_type,file_size,file_data,uploaded_by) VALUES($1,$2,$3,$4,$5,$6)",
-          [created.id, path.basename(file.name).slice(0,255), String(file.type || "application/octet-stream").slice(0,150), data.length, data, actor.id]);
-      }
-      await audit(connection, actor.id, "task.created", "task", created.id); await connection.query("COMMIT");
-    } catch (error) { await connection.query("ROLLBACK"); throw error; } finally { connection.release(); }
-    sendJson(response, 201, { task: created }); return true;
-  }
-  const download = url.pathname.match(/^\/api\/task-files\/(\d+)$/);
-  if (download && request.method === "GET") {
-    const result = await pool.query(`SELECT a.file_name,a.mime_type,a.file_data,t.assigned_to,t.assigned_role,t.is_global,t.created_by,t.subject_id
-      FROM task_attachments a JOIN tasks t ON t.id=a.task_id WHERE a.id=$1`, [download[1]]);
-    if (!result.rowCount) throw new HttpError(404, "Attachment not found.");
-    const file = result.rows[0];
-    let allowed = actor.role === "admin" || actor.role === "developer" || String(file.created_by) === String(actor.id);
-    if (actor.role === "teacher" && String(file.assigned_to) === String(actor.id) && file.assigned_role === "teacher") allowed = true;
-    if (actor.role === "student" && ((file.assigned_to && String(file.assigned_to) === String(actor.id) && file.assigned_role === "student") || file.is_global || (file.subject_id && (await pool.query("SELECT 1 FROM subject_students WHERE subject_id=$1 AND student_id=$2", [file.subject_id, actor.id])).rowCount))) allowed = true;
-    if (!allowed) throw new HttpError(403, "You do not have access to this attachment.");
-    response.writeHead(200, { "Content-Type": file.mime_type, "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(file.file_name)}`, "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store" });
-    response.end(file.file_data); return true;
-  }
-  const match = url.pathname.match(/^\/api\/tasks\/(\d+)$/);
-  if (!match) return false;
-  requireRole(actor, ["developer", "admin", "teacher"]);
-  const existing = await pool.query("SELECT id,created_by FROM tasks WHERE id=$1", [match[1]]);
-  if (!existing.rowCount) throw new HttpError(404, "Task not found.");
-  if (!canManageContent(actor.role, existing.rows[0].created_by, actor.id)) throw new HttpError(403, "Teachers can only modify their own tasks.");
-  if (request.method === "DELETE") {
-    ensureSameOrigin(request);
-    await inTransaction(async (connection) => { await connection.query("DELETE FROM tasks WHERE id=$1", [match[1]]); await audit(connection, actor.id, "task.deleted", "task", match[1]); });
-    sendJson(response, 200, { ok: true }); return true;
-  }
-  return false;
-}
-
 async function handleApi(request, response, url) {
   try {
     if (await authenticate(request, response, url)) return;
@@ -1036,9 +902,7 @@ async function handleApi(request, response, url) {
       handleUserRoutes,
       handleMessageRoutes,
       handleAnnouncementRoutes,
-      handleSubjectRoutes,
       handleLessonPlanRoutes,
-      handleTaskRoutes,
     ];
     for (const handler of handlers) {
       if (await handler(request, response, url, actor)) return;

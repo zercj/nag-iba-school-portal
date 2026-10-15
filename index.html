@@ -9,6 +9,7 @@
     <script src="app.js" defer></script>
   </head>
   <body>
+    <a class="skip-link" href="#main-content">Skip to main content</a>
     <section id="login-screen" class="login-screen" aria-labelledby="login-title">
       <div class="login-brand">
         <img class="brand-mark" src="school-logo.png" alt="Nag-iba National High School crest" />
@@ -43,7 +44,8 @@
     </section>
 
     <div class="app-layout" id="dashboard-app" hidden>
-      <aside class="sidebar" aria-label="Main navigation">
+      <div class="sidebar-scrim" id="sidebar-scrim" hidden></div>
+      <aside class="sidebar" id="sidebar" aria-label="Main navigation">
         <a class="brand" href="#" aria-label="Nag-iba National High School home">
           <img class="brand-mark" src="school-logo.png" alt="" />
           <span><strong>Nag-iba</strong><small>National High School</small></span>
@@ -54,9 +56,8 @@
           <button class="nav-link" type="button" data-view="users" id="users-nav"><span class="nav-icon" aria-hidden="true">♙</span><span id="users-nav-label">Accounts</span></button>
           <button class="nav-link" type="button" data-view="messages"><span class="nav-icon" aria-hidden="true">✉</span>Messages<span class="nav-count" id="unread-count" hidden></span></button>
           <button class="nav-link" type="button" data-view="announcements"><span class="nav-icon" aria-hidden="true">◷</span>Announcements</button>
-          <button class="nav-link" type="button" data-view="tasks"><span class="nav-icon" aria-hidden="true">☑</span><span id="tasks-nav-label">Tasks</span></button>
           <button class="nav-link" type="button" data-view="lesson-plans" id="lesson-plans-nav"><span class="nav-icon" aria-hidden="true">▤</span>Lesson Plans</button>
-          <button class="nav-link" type="button" data-view="documents"><span class="nav-icon" aria-hidden="true">▤</span>Documents</button>
+          <button class="nav-link" type="button" data-view="summary" id="summary-nav" hidden><span class="nav-icon" aria-hidden="true">≣</span>Summary</button>
           <button class="nav-link" type="button" data-view="settings"><span class="nav-icon" aria-hidden="true">⚙</span>Settings</button>
         </nav>
         <div class="sidebar-bottom">
@@ -68,8 +69,9 @@
         </div>
       </aside>
 
-      <main class="main-content">
+      <main class="main-content" id="main-content" tabindex="-1">
         <header class="topbar">
+          <button class="menu-toggle" id="menu-toggle" type="button" aria-label="Open menu" aria-expanded="false" aria-controls="sidebar">☰</button>
           <div class="breadcrumbs"><span>Nag-iba National High School</span><span class="crumb-separator">/</span><strong id="breadcrumb-current">Overview</strong></div>
           <div class="topbar-actions"><span class="school-year"><span class="status-dot"></span>2026–2027 school year</span></div>
         </header>
@@ -84,14 +86,10 @@
             <div class="section-heading"><div><h2 id="welcome-heading">Welcome</h2><p>Your school workspace at a glance.</p></div></div>
             <div id="overview-stats" class="overview-stats"></div>
             <section class="panel" id="lp-dashboard-notifications" hidden><div class="panel-heading"><div><h2>Lesson Plan Notifications</h2><p id="lp-notification-summary">Lesson-plan tasks and review updates.</p></div><button class="text-button" type="button" data-go-view="lesson-plans">Open Lesson Plans</button></div><div id="lp-notification-list" class="feed-list"></div></section>
-            <div class="overview-columns">
+            <div class="overview-columns overview-single">
               <section class="panel">
                 <div class="panel-heading"><div><h2>Latest announcements</h2><p>Updates from your school</p></div><button class="text-button" type="button" data-go-view="announcements">All announcements</button></div>
                 <div id="overview-announcements" class="feed-list"></div>
-              </section>
-              <section class="panel">
-                <div class="panel-heading"><div><h2 id="overview-tasks-title">Tasks</h2><p>Recent school work</p></div><button class="text-button" type="button" data-go-view="tasks">View tasks</button></div>
-                <div id="overview-tasks" class="feed-list"></div>
               </section>
             </div>
           </section>
@@ -136,37 +134,8 @@
             <div id="announcement-list" class="content-feed"></div>
           </section>
 
-          <section class="portal-view" id="view-tasks" hidden>
-            <div class="section-heading"><div><h2 id="tasks-heading">Tasks</h2><p id="tasks-description">School work and due dates.</p></div></div>
-            <section class="panel compose-panel" id="task-compose-panel" hidden>
-              <div class="panel-heading"><div><h2>Assign work</h2><p>Assign to one student or make it available to all students.</p></div></div>
-              <form id="task-form" class="portal-form">
-                <label class="login-field" for="task-title">Title<input id="task-title" name="title" maxlength="180" required /></label>
-                <label class="login-field" for="task-description">Instructions<textarea id="task-description" name="description" rows="4" maxlength="10000" required></textarea></label>
-                <div class="form-row">
-                  <label class="login-field" for="task-due">Due date<input id="task-due" name="dueAt" type="datetime-local" /></label>
-                  <label class="login-field" for="task-assignee">Assign to<select id="task-assignee" name="assignedTo"></select></label>
-                </div>
-                <label class="login-field" for="task-subject">Subject / class (optional)<select id="task-subject" name="subjectId"><option value="">No subject</option></select></label>
-                <label class="login-field" for="task-files">Attachments (any file type, up to 10 files; 8 MB each)<input id="task-files" name="files" type="file" multiple /></label>
-                <div class="form-actions"><span class="form-hint" id="task-form-hint">Admins assign tasks to teachers; teachers assign work to students.</span><button class="button button-primary" type="submit">Assign task</button></div>
-              </form>
-            </section>
-            <section class="panel compose-panel" id="subject-compose-panel" hidden>
-              <div class="panel-heading"><div><h2>Create a subject / class</h2><p>Create your class and assign students enrolled in it.</p></div></div>
-              <form id="subject-form" class="portal-form">
-                <div class="form-row"><label class="login-field" for="subject-name">Subject name<input id="subject-name" name="name" maxlength="160" required /></label><label class="login-field" for="subject-code">Subject code (optional)<input id="subject-code" name="code" maxlength="40" /></label></div>
-                <label class="login-field" for="subject-description">Description (optional)<textarea id="subject-description" name="description" rows="2" maxlength="2000"></textarea></label>
-                <div class="form-actions"><span class="form-hint">Only you can manage the subjects you create.</span><button class="button button-primary" type="submit">Create subject</button></div>
-              </form>
-              <div id="subject-list" class="content-feed"></div>
-            </section>
-
-            <div id="task-list" class="content-feed"></div>
-          </section>
-
           <section class="portal-view" id="view-lesson-plans" hidden>
-            <div class="section-heading"><div><h2>Lesson-plan management</h2><p id="lp-page-subtitle">Configure the three terms, assign subjects to teachers, and review all lesson-plan submissions by subject.</p></div></div>
+            <div class="section-heading"><div><h2>Lesson plans</h2><p id="lp-page-subtitle">Schedule instruction, assign subjects to teachers, and review submissions.</p></div></div>
             <section class="panel term-filter-panel"><label class="login-field" for="lp-view-term">Selected term<select id="lp-view-term"><option value="">Choose a term to view lesson plans</option><option value="1">Term 1</option><option value="2">Term 2</option><option value="3">Term 3</option></select></label></section>
 
             <nav class="lp-tabs" id="lp-tabs" role="tablist" aria-label="Lesson-plan sections" data-admin-only hidden>
@@ -175,39 +144,53 @@
               <button type="button" role="tab" class="lp-tab" data-lp-tab="progress" aria-selected="false">Progress</button>
             </nav>
 
-            <!-- OVERVIEW: term numbers + assigned teacher-subjects -->
+            <!-- OVERVIEW: stats, teachers and subjects appear only once a term is chosen -->
             <div data-lp-pane="overview">
-              <div id="lp-term-prompt" class="lp-term-prompt" hidden><strong>Choose a term first.</strong> Pick Term 1, 2 or 3 above to see the lesson plans for that term.</div>
+              <div id="lp-term-prompt" class="lp-term-prompt" hidden><strong>Choose a term first.</strong> Pick Term 1, 2 or 3 above to see its teachers, subjects and lesson plans.</div>
               <div id="lp-dashboard-stats" class="overview-stats"></div>
               <div id="lp-status-summary" class="lp-status-summary" hidden></div>
             </div>
             <section class="panel compose-panel" data-lp-pane="overview" data-admin-only id="lp-assignments-panel" hidden>
-              <div class="panel-heading"><div><h2>Assigned teacher-subjects</h2><p>Existing assignments and calendars are retained.</p></div></div>
+              <div class="panel-heading"><div><h2 id="lp-assignments-heading">Teachers and subjects</h2><p>Each subject has its own calendar. Select “View plans” to open it.</p></div></div>
               <div id="lp-assignment-list" class="content-feed"></div>
             </section>
 
-            <!-- SCHEDULE: generate daily tasks -->
+            <!-- SCHEDULE: one unified form -->
             <section class="panel compose-panel" data-lp-pane="schedule" id="lesson-plan-admin-panel" hidden>
-              <div class="panel-heading"><div><h2>Lesson-plan schedule</h2><p>Configure the three terms, assign subjects to teachers, and generate daily upload tasks for the selected term only.</p></div></div>
+              <div class="panel-heading"><div><h2>Schedule instruction</h2><p>Pick the term, the teacher, the weeks of instruction and the days classes are held. A separate calendar is created for every subject.</p></div></div>
               <form id="lp-generate-form" class="portal-form">
-                <div class="form-row"><label class="login-field" for="lp-generate-term">Term<select id="lp-generate-term" required><option value="1">Term 1</option><option value="2">Term 2</option><option value="3">Term 3</option></select></label><label class="login-field" for="lp-teacher">Teacher<select id="lp-teacher" required></select></label></div>
-                <div class="form-row"><label class="login-field" for="lp-subject">Subject<input id="lp-subject" name="subjectName" type="text" maxlength="160" placeholder="Type subject name" required /></label><label class="login-field" for="lp-weeks">Number of weeks<input id="lp-weeks" type="number" min="1" max="52" value="10" required /></label><label class="login-field" for="lp-days">Days per week<input id="lp-days" type="number" min="1" max="7" value="5" required /></label></div>
-                <label class="login-field" for="lp-start-date">First lesson-plan date<input id="lp-start-date" type="date" required /></label>
-                <div class="form-actions"><span class="form-hint">Only the selected term, teacher, and subject are affected. This is the administrator schedule-generation control.</span><button class="button button-primary" type="submit">Save schedule and generate daily tasks</button></div>
+                <div class="form-row">
+                  <label class="login-field" for="lp-generate-term">Term<select id="lp-generate-term" required><option value="1">Term 1</option><option value="2">Term 2</option><option value="3">Term 3</option></select></label>
+                  <label class="login-field" for="lp-teacher">Teacher<select id="lp-teacher" required></select></label>
+                </div>
+                <label class="login-field" for="lp-subject">Subjects<input id="lp-subject" name="subjectName" type="text" maxlength="600" placeholder="e.g. Mathematics 7, Science 7" required /><small class="form-hint">Separate several subjects with commas. Each one gets its own calendar.</small></label>
+                <div class="form-row">
+                  <label class="login-field" for="lp-weeks">Weeks of instruction<input id="lp-weeks" type="number" min="1" max="52" value="10" required /></label>
+                  <label class="login-field" for="lp-start-date">First lesson-plan date<input id="lp-start-date" type="date" required /></label>
+                </div>
+                <fieldset class="day-picker" id="lp-days">
+                  <legend>Instruction days</legend>
+                  <label class="day-chip"><input type="checkbox" name="weekday" value="1" checked /><span>Mon</span></label>
+                  <label class="day-chip"><input type="checkbox" name="weekday" value="2" checked /><span>Tue</span></label>
+                  <label class="day-chip"><input type="checkbox" name="weekday" value="3" checked /><span>Wed</span></label>
+                  <label class="day-chip"><input type="checkbox" name="weekday" value="4" checked /><span>Thu</span></label>
+                  <label class="day-chip"><input type="checkbox" name="weekday" value="5" checked /><span>Fri</span></label>
+                </fieldset>
+                <div class="form-actions"><span class="form-hint">Re-saving a schedule updates its dates. Days already submitted are never removed.</span><button class="button button-primary" type="submit">Save schedule</button></div>
               </form>
             </section>
 
-            <!-- PROGRESS: by subject, by teacher, details -->
+            <!-- PROGRESS -->
             <section class="panel" data-lp-pane="progress" id="lp-progress-panel" hidden>
-              <div class="panel-heading"><div><h2>Progress by subject</h2><p>Choose a subject to open its calendar and submissions. Details stay hidden until selected.</p></div></div>
+              <div class="panel-heading"><div><h2>Progress by subject</h2><p>Choose a subject to open its calendar and submissions.</p></div></div>
               <div class="table-scroll"><table class="data-table lp-table"><thead><tr><th>Subject</th><th>Teacher(s)</th><th>Tasks</th><th>Submitted</th><th>Approved</th><th>Overdue</th><th>Progress</th></tr></thead><tbody id="lp-subject-progress"></tbody></table></div>
             </section>
             <section class="panel" data-lp-pane="progress" id="lp-teacher-progress-panel" hidden>
-              <div class="panel-heading"><div><h2>Progress by teacher</h2><p>Choose a teacher first to open their subjects and lesson-plan submissions for the selected term.</p></div></div>
+              <div class="panel-heading"><div><h2>Progress by teacher</h2><p>Choose a teacher to open their subjects for the selected term.</p></div></div>
               <div class="table-scroll"><table class="data-table lp-table"><thead><tr><th>Teacher</th><th>Subjects</th><th>Tasks</th><th>Submitted</th><th>Approved</th><th>Overdue</th><th>Progress</th></tr></thead><tbody id="lp-teacher-progress"></tbody></table></div>
             </section>
             <section class="panel compose-panel" data-lp-pane="progress" id="lesson-plan-task-panel" hidden>
-              <div class="panel-heading"><div><h2 id="lp-task-detail-heading">Lesson-plan details</h2><p>Click a day on the calendar to open its PDF, approval status, feedback, and revision history.</p></div><button type="button" class="button button-secondary" id="lp-close-details">Close details</button></div>
+              <div class="panel-heading"><div><h2 id="lp-task-detail-heading">Lesson-plan details</h2><p>Select a day on the calendar to open its PDF, approval status, feedback and revision history.</p></div><button type="button" class="button button-secondary" id="lp-close-details">Close</button></div>
               <div id="lesson-plan-task-list" class="lp-cal-host"></div>
             </section>
 
@@ -220,8 +203,16 @@
             </dialog>
           </section>
 
-          <section class="portal-view" id="view-documents" hidden>
-            <section class="panel empty-feature"><span class="empty-icon">▤</span><h2>Document submissions</h2><p>Document requirements will appear here when the school connects the document-submission database. Sample dashboard figures have been removed.</p></section>
+          <section class="portal-view" id="view-summary" hidden>
+            <div class="section-heading"><div><h2>Lesson-plan summary</h2><p>Every teacher, their subjects, and how many lesson plans each subject has submitted.</p></div></div>
+            <section class="panel term-filter-panel"><div class="summary-filter" role="group" aria-label="Term filter">
+              <button type="button" class="chip-button is-active" data-summary-term="all">All terms</button>
+              <button type="button" class="chip-button" data-summary-term="1">Term 1</button>
+              <button type="button" class="chip-button" data-summary-term="2">Term 2</button>
+              <button type="button" class="chip-button" data-summary-term="3">Term 3</button>
+            </div></section>
+            <div id="summary-totals" class="overview-stats"></div>
+            <div id="summary-list" class="summary-grid"></div>
           </section>
 
           <section class="portal-view" id="view-settings" hidden>

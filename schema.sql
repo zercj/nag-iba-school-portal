@@ -211,3 +211,6 @@ ALTER TABLE lesson_plan_upload_versions ADD COLUMN IF NOT EXISTS admin_revision_
 ALTER TABLE lesson_plan_upload_versions ADD COLUMN IF NOT EXISTS admin_revision_file_mime TEXT NOT NULL DEFAULT 'application/pdf';
 ALTER TABLE lesson_plan_upload_versions ADD COLUMN IF NOT EXISTS admin_revision_file_size BIGINT NOT NULL DEFAULT 0;
 ALTER TABLE lesson_plan_upload_versions ADD COLUMN IF NOT EXISTS admin_revision_file_data BYTEA;
+
+-- Unified scheduling: the administrator picks instruction days (1=Mon … 5=Fri).
+ALTER TABLE lesson_plan_term_settings ADD COLUMN IF NOT EXISTS weekdays TEXT NOT NULL DEFAULT '1,2,3,4,5';

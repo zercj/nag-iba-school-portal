@@ -539,3 +539,120 @@ h1, h2 { font-family: Manrope, "Segoe UI", sans-serif; }
   #lesson-plan-task-list.lp-cal-host { padding: 0 10px 12px; }
   .lp-dialog { border-radius: 12px; }
 }
+
+/* ================= Ergonomics pass ================= */
+html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+body { font-size: 15px; line-height: 1.5; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } * { transition: none !important; animation: none !important; } }
+
+.skip-link { position: absolute; left: 12px; top: -48px; z-index: 50; padding: 10px 14px; border-radius: 8px; background: #17326e; color: #fff; font-weight: 600; text-decoration: none; transition: top .15s; }
+.skip-link:focus { top: 10px; }
+.main-content:focus { outline: none; }
+
+/* Readable type: the old 9–11px sizes are raised to a comfortable 13–15px */
+.login-field { font-size: 13px; gap: 7px; }
+.login-field input, .login-field select { height: 46px; font-size: 14px; }
+.login-field textarea { font-size: 14px; }
+.login-intro, .login-footnote, .hosting-notice { font-size: 13px; }
+.login-submit { height: 48px; font-size: 14px; }
+.button { height: 44px; padding: 0 16px; font-size: 13px; }
+.nav-link { min-height: 46px; font-size: 14px; }
+.nav-label { font-size: 11px; }
+.page-heading p, .section-heading p, .panel-heading p { font-size: 13px; }
+.feed-item h3, .content-card h3 { font-size: 14px; }
+.feed-item p, .content-card p, .message-content p { font-size: 13px; }
+.feed-item small, .content-card small, .form-hint, .dialog-form .login-field small { font-size: 12px; }
+.empty-feed { font-size: 13px; padding: 28px 8px; }
+.message-meta strong { font-size: 13px; }
+.message-meta span { font-size: 11px; }
+.message-avatar { width: 36px; height: 36px; font-size: 11px; }
+.role-badge { font-size: 11px; padding: 5px 9px; }
+.checkbox-field, .form-error, .global-error, .toast { font-size: 13px; }
+.data-table th, .data-table td { font-size: 13px; }
+.action-link { min-height: 36px; display: inline-flex; align-items: center; font-size: 13px; }
+.stat-label { font-size: 12px; }
+.lp-tab { height: 42px; font-size: 14px; padding: 0 20px; }
+.lp-chip, .lp-sum { font-size: 12px; }
+.lp-cal-cell { min-height: 64px; }
+.lp-note, .lp-meta, .lp-feedback { font-size: 13px; }
+.breadcrumbs { font-size: 13px; }
+
+/* Sticky top bar + visible focus */
+.topbar { position: sticky; top: 0; z-index: 20; gap: 12px; }
+:focus-visible { outline: 3px solid #5b8def; outline-offset: 2px; }
+.menu-toggle { display: none; width: 44px; height: 44px; border: 1px solid #dfe5ee; border-radius: 10px; background: #fff; color: #17326e; font-size: 20px; line-height: 1; }
+.sidebar-scrim { position: fixed; inset: 0; z-index: 29; background: #0f1d3a66; }
+
+/* Overview: single announcements column */
+.overview-columns.overview-single { grid-template-columns: minmax(0, 1fr); }
+.overview-stats { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+.portal-view { animation: viewIn .18s ease-out; }
+@keyframes viewIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+/* Term filter bar + tabs stay reachable while scrolling */
+.term-filter-panel { padding: 12px 16px; margin-bottom: 14px; }
+.term-filter-panel .login-field { margin: 0; max-width: 360px; }
+.lp-tabs { position: sticky; top: 66px; z-index: 10; box-shadow: 0 4px 10px #1a294410; }
+
+/* Schedule form: day picker */
+.day-picker { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 4px; padding: 0; border: 0; }
+.day-picker legend { padding: 0; margin-bottom: 8px; color: #506078; font-size: 13px; font-weight: 600; }
+.day-chip { position: relative; }
+.day-chip input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+.day-chip span { display: grid; min-width: 62px; height: 46px; place-items: center; padding: 0 14px; border: 1.5px solid #dbe3ef; border-radius: 10px; background: #fff; color: #55657d; font-size: 14px; font-weight: 600; transition: background .12s, border-color .12s; }
+.day-chip input:checked + span { border-color: #1748e8; background: #1748e8; color: #fff; }
+.day-chip input:focus-visible + span { outline: 3px solid #5b8def; outline-offset: 2px; }
+
+/* Assignments grouped by teacher */
+.lp-assignment-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 10px 0; border-top: 1px solid #eef1f5; }
+.lp-assignment-row:first-of-type { margin-top: 8px; }
+.lp-assignment-row strong { display: block; color: #334760; font-size: 14px; }
+.lp-assignment-row small { color: #7d8a9b; }
+.lp-assignment-card .lp-assignment-edit { margin-bottom: 8px; }
+.lp-text-revision { color: #6b3fa0; }
+
+/* Summary page */
+.summary-filter, .chip-button-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip-button { height: 40px; padding: 0 16px; border: 1.5px solid #dbe3ef; border-radius: 999px; background: #fff; color: #55657d; font-size: 13px; font-weight: 600; }
+.chip-button:hover { background: #f1f5fb; }
+.chip-button.is-active { border-color: #1748e8; background: #1748e8; color: #fff; }
+.summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 14px; align-items: start; }
+.summary-card { padding: 16px 18px; min-width: 0; }
+.summary-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; padding-bottom: 12px; border-bottom: 1px solid #eef1f5; }
+.summary-card-head h3 { margin: 0 0 3px; color: #1f3358; font-size: 16px; }
+.summary-card-head small { color: #7d8a9b; font-size: 12px; }
+.summary-card-head .lp-progress-cell { min-width: 110px; }
+.summary-subjects { margin: 12px 0 0; padding: 0 0 0 20px; display: grid; gap: 12px; }
+.summary-subjects li::marker { color: #1748e8; }
+.summary-subject { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.summary-subject strong { color: #334760; font-size: 14px; }
+.summary-subject small { color: #8a96a6; font-size: 11px; font-weight: 600; letter-spacing: .4px; }
+.summary-counts { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 3px; color: #6f7e91; font-size: 12.5px; }
+.summary-counts b { color: #26395c; }
+
+/* Mobile: slide-in drawer instead of a cramped scrolling bar */
+@media (max-width: 760px) {
+  .menu-toggle { display: inline-grid; place-items: center; flex: 0 0 auto; }
+  .sidebar { position: fixed; inset: 0 auto 0 0; z-index: 30; width: min(82vw, 300px); min-height: 100vh; flex-direction: column; flex-wrap: nowrap; align-items: stretch; padding: 22px 16px; overflow-y: auto; transform: translateX(-102%); transition: transform .2s ease; }
+  .sidebar.is-open { transform: none; box-shadow: 6px 0 30px #0f1d3a44; }
+  .nav-label { display: block; }
+  .main-nav { display: grid; order: 0; margin-top: 8px; overflow: visible; }
+  .main-nav .nav-link { width: 100%; min-height: 48px; padding: 0 12px; font-size: 15px; gap: 12px; }
+  .main-nav .nav-icon { width: 20px; font-size: 16px; }
+  .sidebar-bottom { display: block; order: 0; margin-top: auto; padding-top: 16px; }
+  .profile { display: flex; }
+  .sign-out-button { margin: 8px 0 0; min-height: 46px; }
+  .topbar { height: 58px; padding: 0 12px; }
+  .topbar-actions .school-year { display: none; }
+  .breadcrumbs span:not(strong):not(.crumb-separator) { display: none; }
+  .breadcrumbs .crumb-separator { display: none; }
+  .lp-tabs { top: 58px; width: 100%; }
+  .lp-tab { flex: 1; padding: 0 8px; }
+  .summary-grid { grid-template-columns: 1fr; }
+  .toast { left: 16px; right: 16px; bottom: 16px; max-width: none; }
+  .form-actions { flex-direction: column; align-items: stretch; }
+  .form-actions .button { width: 100%; }
+  .day-chip span { min-width: 54px; }
+  .content-wrap { padding: 18px 14px 24px; }
+}
+@media (min-width: 761px) { .sidebar-scrim { display: none !important; } }
