@@ -888,6 +888,17 @@ async function handleLessonPlanRoutes(request, response, url, actor) {
     response.writeHead(200,{"Content-Type":f.mime_type,"Content-Disposition":`attachment; filename*=UTF-8''${encodeURIComponent(f.file_name)}`,"Cache-Control":"no-store","X-Content-Type-Options":"nosniff"});
     response.end(f.file_data); return true;
   }
+  const confirmMatch = url.pathname.match(/^\/api\/lesson-plans\/uploads\/(\d+)\/confirm$/);
+  if (confirmMatch && request.method === "POST") {
+    ensureSameOrigin(request); requireRole(actor, ["teacher"]);
+    const result = await pool.query(`UPDATE lesson_plan_uploads x SET status='Completed'
+      FROM lesson_plan_generated_tasks t
+      WHERE x.id=$1 AND x.task_id=t.id AND t.teacher_id=$2 AND x.status='Approved'
+      RETURNING x.id`, [confirmMatch[1], actor.id]);
+    if (!result.rowCount) throw new HttpError(409, "Only an administrator-approved lesson plan can be confirmed.");
+    sendJson(response, 200, {ok:true,status:"Completed"}); return true;
+  }
+
   const reviewMatch = url.pathname.match(/^\/api\/lesson-plans\/uploads\/(\d+)\/review$/);
   if (reviewMatch && request.method === "POST") {
     ensureSameOrigin(request); requireRole(actor,admin);

@@ -160,7 +160,7 @@ CREATE TABLE IF NOT EXISTS lesson_plan_uploads (
   mime_type TEXT NOT NULL DEFAULT 'application/octet-stream',
   file_size BIGINT NOT NULL,
   file_data BYTEA NOT NULL,
-  status TEXT NOT NULL DEFAULT 'Submitted' CHECK(status IN ('Submitted','Late','Approved','For Revision')),
+  status TEXT NOT NULL DEFAULT 'Submitted' CHECK(status IN ('Submitted','Late','Approved','For Revision','Completed')),
   admin_feedback TEXT NOT NULL DEFAULT '',
   submitted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   reviewed_by BIGINT REFERENCES users(id) ON DELETE SET NULL,
@@ -191,5 +191,5 @@ DO $$ BEGIN
   IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'lesson_plan_uploads_status_check') THEN
     ALTER TABLE lesson_plan_uploads DROP CONSTRAINT lesson_plan_uploads_status_check;
   END IF;
-  ALTER TABLE lesson_plan_uploads ADD CONSTRAINT lesson_plan_uploads_status_check CHECK(status IN ('Submitted','Late','Approved','For Revision'));
+  ALTER TABLE lesson_plan_uploads ADD CONSTRAINT lesson_plan_uploads_status_check CHECK(status IN ('Submitted','Late','Approved','For Revision','Completed'));
 END $$;
