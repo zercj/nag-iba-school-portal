@@ -300,7 +300,9 @@ function renderLessonPlanTasks() {
     const late=String(t.status||"").toLowerCase()==="late" || String(t.status||"").toLowerCase()==="overdue";
     const controls=admin
       ? (submitted ? `<div class="attachment-list"><a class="action-link" href="/api/lesson-plans/uploads/${t.upload_id}/file" target="_blank" rel="noopener">Open PDF: ${escapeHtml(t.file_name)}</a><p>Status: <strong>${escapeHtml(t.status)}</strong>${t.admin_feedback ? ` · ${escapeHtml(t.admin_feedback)}` : ""}</p><p>Submitted: ${formatDate(t.submitted_at)}${Number(t.revision_count)>0 ? ` · ${t.revision_count} earlier revision(s)` : ""}</p><form class="lp-review-form" data-upload-id="${t.upload_id}"><select name="status"><option>Approved</option><option>For Revision</option></select><input name="feedback" maxlength="2000" placeholder="Revision notes / admin feedback" value="${escapeHtml(t.admin_feedback||"")}"><button class="button button-primary" type="submit">Save review</button></form>${Number(t.revision_count)>0 ? `<details><summary>View previous revisions (${t.revision_count})</summary><div class="lp-history" data-history-task="${t.id}">Loading revision history…</div></details>` : ""}</div>` : `<p>Status: <strong>${escapeHtml(t.status)}</strong></p><small>Waiting for teacher upload.</small>`)
-      : `<form class="lp-upload-form" data-task-id="${t.id}"><label class="login-field">Upload lesson plan (PDF only, max 8 MB)<input type="file" name="file" accept="application/pdf,.pdf" required></label><button class="button button-primary" type="submit">${submitted ? "Upload revised PDF" : "Submit daily lesson plan"}</button>${submitted ? `<p>Status: <strong>${escapeHtml(t.status)}</strong>${t.admin_feedback ? ` · Admin feedback: ${escapeHtml(t.admin_feedback)}` : ""}</p><small>Submitted: ${formatDate(t.submitted_at)}</small>` : `<p>Status: <strong>${escapeHtml(t.status)}</strong></p>`}</form>`;
+      : (submitted && String(t.status||"").toLowerCase() !== "for revision"
+          ? `<div class="attachment-list"><p>Status: <strong>${escapeHtml(t.status)}</strong>${t.admin_feedback ? ` · Admin feedback: ${escapeHtml(t.admin_feedback)}` : ""}</p><small>Submitted: ${formatDate(t.submitted_at)}</small>${String(t.status||"").toLowerCase()==="approved" ? `<p>Your lesson plan has been approved. No further upload is needed.</p>` : `<p>Your lesson plan is awaiting administrator review. You can upload a new PDF if the administrator requests a revision.</p>`}</div>`
+          : `<form class="lp-upload-form" data-task-id="${t.id}"><label class="login-field">${submitted ? "Upload revised lesson plan (PDF only, max 8 MB)" : "Upload lesson plan (PDF only, max 8 MB)"}<input type="file" name="file" accept="application/pdf,.pdf" required></label><button class="button button-primary" type="submit">${submitted ? "Submit revised PDF for approval" : "Submit daily lesson plan"}</button>${submitted ? `<p>Status: <strong>For Revision</strong></p><p>Administrator feedback: ${escapeHtml(t.admin_feedback||"Please revise the lesson plan as instructed.")}</p><small>Your new PDF will be sent back to the administrator for review. The previous version remains in revision history.</small>` : `<p>Status: <strong>${escapeHtml(t.status)}</strong></p>`}</form>`);
     return `<article class="calendar-day ${late?"calendar-day-late":""}"><div class="content-card-heading"><h4>Day ${t.day_number}</h4><span class="deadline-chip">Due ${formatDate(t.due_date)}</span></div>${admin?`<small>Teacher: ${escapeHtml(t.teacher_name)}</small>`:""}${controls}</article>`;
   }).join("")}</div></section>`).join("") : emptyFeed(admin ? "No calendar entries for this term and selection." : "No lesson-plan calendar assigned to you for this term yet.");
   if(admin) host.innerHTML=weekMarkup;
@@ -360,8 +362,12 @@ async function refreshLessonPlans() {
       api(`/api/lesson-plans/tasks?term=${term}`),
       api("/api/directory")
     ]);
-    lessonPlanAssignments=assignments.assignments;
-    lessonPlanTasks=taskResult.tasks;
+    lessonPlanAssignments=assignments.assignments || [];
+    // Treat the current assignment list as the source of truth. This prevents
+    // orphaned/stale generated tasks from appearing in progress totals, even
+    // if an older deployment or database migration left task rows behind.
+    const activeAssignmentKeys = new Set(lessonPlanAssignments.map(a => `${String(a.teacher_id)}|${String(a.subject_id)}`));
+    lessonPlanTasks=(taskResult.tasks || []).filter(t => activeAssignmentKeys.has(`${String(t.teacher_id)}|${String(t.subject_id)}`));
     directory=directoryResult.users;
     const teacherSelect=document.querySelector("#lp-teacher");
     const prior=teacherSelect.value;
@@ -791,7 +797,8 @@ document.querySelector("#view-lesson-plans").addEventListener("submit",async(eve
   } else if(reviewForm){
     event.preventDefault();
     const data=new FormData(reviewForm);
-    try { await api(`/api/lesson-plans/uploads/${reviewForm.dataset.uploadId}/review`,{method:"POST",body:{status:data.get("status"),feedback:data.get("feedback")}}); await refreshLessonPlans(); await refreshLpNotifications(); showToast("Lesson-plan review saved."); }
+    if(data.get("status")==="For Revision" && !String(data.get("feedback")||"").trim()){setGlobalError("Write feedback explaining what the teacher must revise.");return;}
+    try { await api(`/api/lesson-plans/uploads/${reviewForm.dataset.uploadId}/review`,{method:"POST",body:{status:data.get("status"),feedback:data.get("feedback")}}); await refreshLessonPlans(); await refreshLpNotifications(); showToast(data.get("status")==="For Revision" ? "Revision requested. The teacher can now submit a new PDF." : "Lesson plan approved."); }
     catch(e){setGlobalError(e.message);}
   }
 });

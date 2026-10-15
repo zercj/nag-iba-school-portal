@@ -720,16 +720,14 @@ async function handleLessonPlanRoutes(request, response, url, actor) {
         [deleteAssignment[1]]
       );
       if (!assignment.rowCount) throw new HttpError(404, "Teacher–subject assignment not found.");
-      const { teacher_id: teacherId, subject_id: subjectId } = assignment.rows[0];
-      await conn.query(
-        "DELETE FROM lesson_plan_generated_tasks WHERE teacher_id=$1 AND subject_id=$2",
-        [teacherId, subjectId]
-      );
-      await conn.query("DELETE FROM lesson_plan_subject_assignments WHERE id=$1", [deleteAssignment[1]]);
-      // Remove the subject record only when no other assignment or task still uses it.
-      await conn.query(`DELETE FROM subjects s WHERE s.id=$1
-        AND NOT EXISTS (SELECT 1 FROM lesson_plan_subject_assignments a WHERE a.subject_id=s.id)
-        AND NOT EXISTS (SELECT 1 FROM lesson_plan_generated_tasks t WHERE t.subject_id=s.id)`, [subjectId]);
+      const { subject_id: subjectId } = assignment.rows[0];
+      // Admin deletion means the subject itself is removed, not merely hidden from
+      // the lesson-plan assignment list. Remove all task/assignment references so
+      // it also disappears from the teacher's Subjects dashboard and progress views.
+      await conn.query("DELETE FROM lesson_plan_generated_tasks WHERE subject_id=$1", [subjectId]);
+      await conn.query("DELETE FROM lesson_plan_subject_assignments WHERE subject_id=$1", [subjectId]);
+      await conn.query("DELETE FROM subject_students WHERE subject_id=$1", [subjectId]);
+      await conn.query("DELETE FROM subjects WHERE id=$1", [subjectId]);
       await conn.query("COMMIT");
     } catch (e) {
       await conn.query("ROLLBACK");
@@ -817,6 +815,10 @@ async function handleLessonPlanRoutes(request, response, url, actor) {
       FROM lesson_plan_generated_tasks t JOIN users u ON u.id=t.teacher_id JOIN subjects s ON s.id=t.subject_id
       LEFT JOIN lesson_plan_uploads x ON x.task_id=t.id
       WHERE t.term_number=$1 AND ($2 OR t.teacher_id=$3)
+        AND EXISTS (
+          SELECT 1 FROM lesson_plan_subject_assignments a
+          WHERE a.teacher_id=t.teacher_id AND a.subject_id=t.subject_id
+        )
       ORDER BY s.name,t.week_number,t.day_number,u.display_name`, [term,admin.includes(actor.role),actor.id]);
     sendJson(response, 200, { tasks: result.rows }); return true;
   }
@@ -840,6 +842,12 @@ async function handleLessonPlanRoutes(request, response, url, actor) {
       const current = await conn.query("SELECT id,task_id,teacher_id,file_name,mime_type,file_size,file_data,status,admin_feedback,submitted_at FROM lesson_plan_uploads WHERE task_id=$1 FOR UPDATE", [uploadMatch[1]]);
       let version = 1;
       if (current.rowCount) {
+        const priorStatus = String(current.rows[0].status || "").toLowerCase();
+        if (priorStatus !== "for revision") {
+          throw new HttpError(409, priorStatus === "approved"
+            ? "This lesson plan has already been approved. Contact the administrator if another submission is required."
+            : "Your lesson plan is awaiting administrator review. You can upload a replacement only after the administrator requests a revision.");
+        }
         const count = await conn.query("SELECT COALESCE(MAX(version_number),0)::int AS n FROM lesson_plan_upload_versions WHERE task_id=$1", [uploadMatch[1]]);
         version = count.rows[0].n + 1;
         const old = current.rows[0];
@@ -885,8 +893,13 @@ async function handleLessonPlanRoutes(request, response, url, actor) {
     ensureSameOrigin(request); requireRole(actor,admin);
     const body=await parseJson(request), status=body.status;
     if (!["Approved","For Revision"].includes(status)) throw new HttpError(400,"Choose Approved or For Revision.");
+    const feedback=String(body.feedback||"").trim().slice(0,2000);
+    if (status === "For Revision" && !feedback) throw new HttpError(400,"Write feedback explaining what the teacher must revise.");
+    const current=await pool.query("SELECT status FROM lesson_plan_uploads WHERE id=$1",[reviewMatch[1]]);
+    if (!current.rowCount) throw new HttpError(404,"Lesson-plan submission not found.");
+    if (!["Submitted","Late"].includes(current.rows[0].status)) throw new HttpError(409,"Only submissions awaiting review can be reviewed. A revised submission must be uploaded before it can be approved.");
     await pool.query("UPDATE lesson_plan_uploads SET status=$1,admin_feedback=$2,reviewed_by=$3,reviewed_at=NOW() WHERE id=$4",
-      [status,String(body.feedback||"").slice(0,2000),actor.id,reviewMatch[1]]);
+      [status,feedback,actor.id,reviewMatch[1]]);
     sendJson(response,200,{ok:true}); return true;
   }
   return false;
