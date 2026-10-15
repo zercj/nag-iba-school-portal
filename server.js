@@ -707,7 +707,8 @@ async function handleLessonPlanRoutes(request, response, url, actor) {
     const setting = await pool.query("SELECT weeks,days_per_week,start_date FROM lesson_plan_term_settings WHERE term_number=$1", [term]);
     if (!setting.rowCount) throw new HttpError(400, "Configure the term first.");
     const cfg = setting.rows[0];
-    const assignments = await pool.query("SELECT teacher_id,subject_id FROM lesson_plan_subject_assignments");
+    const assignments = await pool.query("SELECT teacher_id,subject_id FROM lesson_plan_subject_assignments ORDER BY teacher_id,subject_id");
+    if (!assignments.rowCount) throw new HttpError(400, "Assign at least one subject to a teacher before generating tasks.");
     const conn = await pool.connect(); let count = 0;
     try {
       await conn.query("BEGIN");
@@ -729,7 +730,7 @@ async function handleLessonPlanRoutes(request, response, url, actor) {
       }
       await conn.query("COMMIT");
     } catch(e) { await conn.query("ROLLBACK"); throw e; } finally { conn.release(); }
-    sendJson(response, 200, { ok:true, generatedOrExisting:count }); return true;
+    sendJson(response, 200, { ok:true, termNumber: term, generatedOrExisting:count }); return true;
   }
   if (url.pathname === "/api/lesson-plans/tasks" && request.method === "GET") {
     const term = Number(url.searchParams.get("term") || 1);
