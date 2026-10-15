@@ -12,6 +12,7 @@ const viewTitles = {
   announcements: ["Announcements", "School and classroom updates."],
   tasks: ["Tasks", "School work and due dates."],
   documents: ["Documents", "Document requirements and submissions."],
+  "lesson-plans": ["Lesson Plan Submission Center", "Dedicated workspace for lesson-plan submissions and progress."],
   settings: ["Settings", "Update your account security settings."],
 };
 
@@ -105,6 +106,7 @@ function updateNavigation() {
   document.querySelector("#tasks-nav-label").textContent = currentUser.role === "student" ? "My tasks" : "Tasks";
   document.querySelector("#announcement-compose-panel").hidden = currentUser.role === "student";
   document.querySelector("#task-compose-panel").hidden = currentUser.role === "student";
+  document.querySelector("#lesson-plans-nav").hidden = !["admin","developer","teacher"].includes(currentUser.role);
   document.querySelector("#lesson-plan-admin-panel").hidden = !["admin","developer"].includes(currentUser.role);
   document.querySelector("#subject-compose-panel").hidden = currentUser.role !== "teacher";
   document.querySelector("#add-user-button").hidden = !canManage;
@@ -145,6 +147,7 @@ function goToView(view) {
   if (view === "messages") refreshMessages();
   if (view === "announcements") refreshAnnouncements();
   if (view === "tasks") refreshTasks();
+  if (view === "lesson-plans") refreshLessonPlans();
 }
 
 function renderOverview() {
@@ -288,6 +291,40 @@ function renderLessonPlanTasks() {
     return `<article class="content-card"><div class="content-card-heading"><h3>${escapeHtml(t.subject_name)} · Week ${t.week_number}, Day ${t.day_number}</h3><span class="deadline-chip">Due ${formatDate(t.due_date)}</span></div>${isLpAdmin()?`<small>Teacher: ${escapeHtml(t.teacher_name)}</small>`:""}${controls}</article>`;
   }).join("") : emptyFeed(isLpAdmin() ? "No generated tasks for this term. Assign subjects and generate tasks first." : "No lesson-plan tasks assigned to your account for this term.");
 }
+function renderLessonPlanDashboard() {
+  const statsHost=document.querySelector("#lp-dashboard-stats");
+  if(!statsHost) return;
+  const total=lessonPlanTasks.length;
+  const submitted=lessonPlanTasks.filter(t=>!!t.upload_id).length;
+  const approved=lessonPlanTasks.filter(t=>String(t.status||"").toLowerCase()==="approved").length;
+  const pending=Math.max(0,total-submitted);
+  const cards=[
+    {label:"Required lesson plans",value:total,tone:"blue"},
+    {label:"Submitted",value:submitted,tone:"teal"},
+    {label:"Approved",value:approved,tone:"green"},
+    {label:"Awaiting upload",value:pending,tone:"amber"}
+  ];
+  statsHost.innerHTML=cards.map(c=>`<div class="stat-card overview-stat" data-tone="${c.tone}"><span class="stat-label"><i class="stat-marker"></i>${c.label}</span><span class="stat-value">${c.value}</span></div>`).join("");
+  const admin=isLpAdmin();
+  document.querySelector("#lp-progress-panel").hidden=!admin;
+  document.querySelector("#lp-teacher-progress-panel").hidden=!admin;
+  if(!admin) return;
+  const group=(key)=>{
+    const map=new Map();
+    lessonPlanTasks.forEach(t=>{
+      const name=t[key]||"Unassigned";
+      if(!map.has(name)) map.set(name,{name,teachers:new Set(),subjects:new Set(),total:0,submitted:0,approved:0});
+      const g=map.get(name); g.total++; if(t.teacher_name)g.teachers.add(t.teacher_name); if(t.subject_name)g.subjects.add(t.subject_name); if(t.upload_id)g.submitted++; if(String(t.status||"").toLowerCase()==="approved")g.approved++;
+    });
+    return [...map.values()];
+  };
+  const pct=(g)=>g.total?Math.round(g.submitted/g.total*100):0;
+  const subjectRows=group("subject_name").map(g=>`<tr><td>${escapeHtml(g.name)}</td><td>${escapeHtml([...g.teachers].join(", ")||"—")}</td><td>${g.total}</td><td>${g.submitted}</td><td>${g.approved}</td><td>${pct(g)}%</td></tr>`).join("");
+  document.querySelector("#lp-subject-progress").innerHTML=subjectRows||'<tr><td colspan="6">No tasks generated for this term yet.</td></tr>';
+  const teacherRows=group("teacher_name").map(g=>`<tr><td>${escapeHtml(g.name)}</td><td>${escapeHtml([...g.subjects].join(", ")||"—")}</td><td>${g.total}</td><td>${g.submitted}</td><td>${g.approved}</td><td>${pct(g)}%</td></tr>`).join("");
+  document.querySelector("#lp-teacher-progress").innerHTML=teacherRows||'<tr><td colspan="6">No teacher tasks generated for this term yet.</td></tr>';
+}
+
 async function refreshLessonPlans() {
   if (!currentUser) return;
   try {
@@ -310,12 +347,11 @@ async function refreshLessonPlans() {
     teacherSelect.innerHTML = '<option value="">Choose a teacher</option>' + teachers.map(u => `<option value="${u.id}">${escapeHtml(u.displayName)}</option>`).join("");
     teacherSelect.disabled = teachers.length === 0;
     if (!teachers.length) teacherSelect.innerHTML = '<option value="">No active teacher accounts found</option>';
-    const subjectSelect=document.querySelector("#lp-subject");
-    subjectSelect.innerHTML = '<option value="">Choose a subject</option>' + subjects.map(s => `<option value="${s.id}">${escapeHtml(s.name)}${s.teacher_name ? ` — ${escapeHtml(s.teacher_name)}` : ""}</option>`).join("");
-    subjectSelect.disabled = subjects.length === 0;
-    if (!subjects.length) subjectSelect.innerHTML = '<option value="">No subjects found — create a subject first</option>';
+    const subjectInput=document.querySelector("#lp-subject");
+    subjectInput.disabled = false;
     document.querySelector("#lp-assignment-list").innerHTML=lessonPlanAssignments.length ? lessonPlanAssignments.map(a=>`<article class="content-card"><div class="content-card-heading"><h3>${escapeHtml(a.teacher_name)} · ${escapeHtml(a.subject_name)}</h3><button class="action-link danger-link" type="button" data-lp-remove="${a.id}">Remove</button></div></article>`).join("") : emptyFeed("No teacher-subject assignments yet.");
     renderLessonPlanTasks();
+    renderLessonPlanDashboard();
   } catch(error) { setGlobalError(error.message); }
 }
 
@@ -667,9 +703,9 @@ document.querySelector("#lp-settings-form").addEventListener("submit", async (ev
 document.querySelector("#lp-assignment-form").addEventListener("submit", async (event)=>{
   event.preventDefault();
   const teacherId = document.querySelector("#lp-teacher").value;
-  const subjectId = document.querySelector("#lp-subject").value;
-  if (!teacherId || !subjectId) { setGlobalError("Select an active teacher and a subject before assigning."); return; }
-  try { await api("/api/lesson-plans/assignments",{method:"POST",body:{teacherId,subjectId}}); await refreshLessonPlans(); showToast("Subject assigned to teacher."); }
+  const subjectName = document.querySelector("#lp-subject").value.trim();
+  if (!teacherId || !subjectName) { setGlobalError("Choose a teacher and type a subject name before assigning."); return; }
+  try { await api("/api/lesson-plans/assignments",{method:"POST",body:{teacherId,subjectName}}); document.querySelector("#lp-assignment-form").reset(); await refreshLessonPlans(); showToast("Subject assigned to teacher."); }
   catch(e){setGlobalError(e.message);}
 });
 document.querySelector("#lp-generate-form").addEventListener("submit", async (event)=>{

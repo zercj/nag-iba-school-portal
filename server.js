@@ -686,13 +686,25 @@ async function handleLessonPlanRoutes(request, response, url, actor) {
   }
   if (url.pathname === "/api/lesson-plans/assignments" && request.method === "POST") {
     ensureSameOrigin(request); requireRole(actor, admin);
-    const body = await parseJson(request), teacherId = Number(body.teacherId), subjectId = Number(body.subjectId);
-    const valid = await pool.query(`SELECT u.id AS teacher_id,s.id AS subject_id FROM users u CROSS JOIN subjects s
-      WHERE u.id=$1 AND u.role='teacher' AND u.active=TRUE AND s.id=$2`, [teacherId,subjectId]);
-    if (!valid.rowCount) throw new HttpError(400, "Choose an active teacher and an existing subject.");
+    const body = await parseJson(request), teacherId = Number(body.teacherId);
+    const subjectName = String(body.subjectName || "").trim();
+    if (!Number.isInteger(teacherId) || teacherId < 1 || subjectName.length < 1 || subjectName.length > 160) {
+      throw new HttpError(400, "Choose a teacher and enter a subject name of 1–160 characters.");
+    }
+    const teacher = await pool.query("SELECT id FROM users WHERE id=$1 AND role='teacher' AND active=TRUE", [teacherId]);
+    if (!teacher.rowCount) throw new HttpError(400, "Choose an active user whose role is Teacher.");
+    // Subjects are typed by the administrator and stored against the selected teacher.
+    const subjectResult = await pool.query(
+      `INSERT INTO subjects(name,teacher_id)
+       VALUES($1,$2)
+       ON CONFLICT(teacher_id,name) DO UPDATE SET name=EXCLUDED.name
+       RETURNING id`,
+      [subjectName, teacherId]
+    );
+    const subjectId = subjectResult.rows[0].id;
     const result = await pool.query(`INSERT INTO lesson_plan_subject_assignments(teacher_id,subject_id,assigned_by)
       VALUES($1,$2,$3) ON CONFLICT(teacher_id,subject_id) DO UPDATE SET assigned_by=EXCLUDED.assigned_by RETURNING id`, [teacherId,subjectId,actor.id]);
-    sendJson(response, 201, { ok: true, id: result.rows[0].id }); return true;
+    sendJson(response, 201, { ok: true, id: result.rows[0].id, subjectId }); return true;
   }
   const deleteAssignment = url.pathname.match(/^\/api\/lesson-plans\/assignments\/(\d+)$/);
   if (deleteAssignment && request.method === "DELETE") {

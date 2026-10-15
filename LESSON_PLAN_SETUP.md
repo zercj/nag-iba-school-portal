@@ -17,3 +17,11 @@ The portal initializes new tables from `schema.sql` during server startup. Back 
 - Regenerating a term creates any missing task slots but does not alter existing tasks or submissions. If term settings are changed after tasks have been generated, the existing due dates are intentionally retained.
 - The task generator skips weekends for 5-day schedules, skips Sundays for 6-day schedules, and uses all days for 7-day schedules.
 - Existing subjects must be created before the admin can assign them to teachers.
+
+## Dedicated Lesson Plan Submission Center
+
+The sidebar now includes a separate **Lesson Plans** workspace for administrator and teacher accounts. General school tasks remain in the Tasks section. The Lesson Plans workspace includes term-specific submission cards and, for administrators, progress tables grouped by subject and teacher. Select the term using the term selector in the submission panel to review that term's generated tasks and progress.
+
+
+### Manual teacher-subject assignment
+In the Lesson Plan Submission Center, choose a user whose account role is `teacher`, then type the subject name into the Subject name field. The server validates the teacher role and creates or reuses that subject for the selected teacher before saving the assignment. You do not need to create the subject in a separate dropdown first.

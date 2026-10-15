@@ -55,6 +55,7 @@
           <button class="nav-link" type="button" data-view="messages"><span class="nav-icon" aria-hidden="true">✉</span>Messages<span class="nav-count" id="unread-count" hidden></span></button>
           <button class="nav-link" type="button" data-view="announcements"><span class="nav-icon" aria-hidden="true">◷</span>Announcements</button>
           <button class="nav-link" type="button" data-view="tasks"><span class="nav-icon" aria-hidden="true">☑</span><span id="tasks-nav-label">Tasks</span></button>
+          <button class="nav-link" type="button" data-view="lesson-plans" id="lesson-plans-nav"><span class="nav-icon" aria-hidden="true">▤</span>Lesson Plans</button>
           <button class="nav-link" type="button" data-view="documents"><span class="nav-icon" aria-hidden="true">▤</span>Documents</button>
           <button class="nav-link" type="button" data-view="settings"><span class="nav-icon" aria-hidden="true">⚙</span>Settings</button>
         </nav>
@@ -160,6 +161,20 @@
               <div id="subject-list" class="content-feed"></div>
             </section>
 
+            <div id="task-list" class="content-feed"></div>
+          </section>
+
+          <section class="portal-view" id="view-lesson-plans" hidden>
+            <div class="section-heading"><div><h2>Lesson Plan Submission Center</h2><p>Manage lesson-plan schedules, submissions, review status, and progress by subject and teacher.</p></div></div>
+            <div id="lp-dashboard-stats" class="overview-stats"></div>
+            <section class="panel" id="lp-progress-panel" hidden>
+              <div class="panel-heading"><div><h2>Progress by subject</h2><p>Submitted and approved lesson plans for the selected term.</p></div></div>
+              <div class="table-scroll"><table class="data-table"><thead><tr><th>Subject</th><th>Teacher(s)</th><th>Tasks</th><th>Submitted</th><th>Approved</th><th>Progress</th></tr></thead><tbody id="lp-subject-progress"></tbody></table></div>
+            </section>
+            <section class="panel" id="lp-teacher-progress-panel" hidden>
+              <div class="panel-heading"><div><h2>Progress by teacher</h2><p>Track each teacher's lesson-plan submissions for the selected term.</p></div></div>
+              <div class="table-scroll"><table class="data-table"><thead><tr><th>Teacher</th><th>Subjects</th><th>Tasks</th><th>Submitted</th><th>Approved</th><th>Progress</th></tr></thead><tbody id="lp-teacher-progress"></tbody></table></div>
+            </section>
             <section class="panel compose-panel" id="lesson-plan-admin-panel" hidden>
               <div class="panel-heading"><div><h2>Lesson-plan schedule</h2><p>Configure the three terms, assign subjects to teachers, then generate the daily upload tasks.</p></div></div>
               <form id="lp-settings-form" class="portal-form">
@@ -169,7 +184,7 @@
                 <div class="form-actions"><span class="form-hint">Changes apply to newly generated tasks. Existing tasks are retained.</span><button class="button button-primary" type="submit">Save term settings</button></div>
               </form>
               <form id="lp-assignment-form" class="portal-form">
-                <div class="form-row"><label class="login-field">Teacher<select id="lp-teacher" required></select></label><label class="login-field">Subject<select id="lp-subject" required></select></label></div>
+                <div class="form-row"><label class="login-field" for="lp-teacher">Teacher<select id="lp-teacher" required></select></label><label class="login-field" for="lp-subject">Subject name<input id="lp-subject" name="subjectName" type="text" maxlength="160" placeholder="Type the subject name" required /></label></div>
                 <div class="form-actions"><span class="form-hint">Assign subjects before generating lesson-plan tasks.</span><button class="button button-primary" type="submit">Assign subject</button></div>
               </form>
               <div id="lp-assignment-list" class="content-feed"></div>
@@ -181,7 +196,6 @@
               <div id="lesson-plan-task-list" class="content-feed"></div>
             </section>
 
-            <div id="task-list" class="content-feed"></div>
           </section>
 
           <section class="portal-view" id="view-documents" hidden>
