@@ -652,6 +652,132 @@ async function handleSubjectRoutes(request, response, url, actor) {
   return false;
 }
 
+
+async function handleLessonPlanRoutes(request, response, url, actor) {
+  const admin = ["admin", "developer"];
+  if (url.pathname === "/api/lesson-plans/settings" && request.method === "GET") {
+    const result = await pool.query("SELECT term_number,weeks,days_per_week,start_date FROM lesson_plan_term_settings ORDER BY term_number");
+    sendJson(response, 200, { settings: result.rows }); return true;
+  }
+  if (url.pathname === "/api/lesson-plans/settings" && request.method === "POST") {
+    ensureSameOrigin(request); requireRole(actor, admin);
+    const body = await parseJson(request);
+    if (!Array.isArray(body.settings) || body.settings.length !== 3) throw new HttpError(400, "Provide settings for all three terms.");
+    const conn = await pool.connect();
+    try {
+      await conn.query("BEGIN");
+      for (const item of body.settings) {
+        const term = Number(item.termNumber), weeks = Number(item.weeks), days = Number(item.daysPerWeek);
+        const start = new Date(item.startDate);
+        if (![1,2,3].includes(term) || !Number.isInteger(weeks) || weeks < 1 || weeks > 52 || !Number.isInteger(days) || days < 1 || days > 7 || !item.startDate || Number.isNaN(start.getTime())) throw new HttpError(400, "Check each term's weeks, days per week, and start date.");
+        await conn.query(`INSERT INTO lesson_plan_term_settings(term_number,weeks,days_per_week,start_date,updated_by,updated_at)
+          VALUES($1,$2,$3,$4,$5,NOW()) ON CONFLICT(term_number) DO UPDATE SET weeks=EXCLUDED.weeks,days_per_week=EXCLUDED.days_per_week,start_date=EXCLUDED.start_date,updated_by=EXCLUDED.updated_by,updated_at=NOW()`,
+          [term,weeks,days,item.startDate,actor.id]);
+      }
+      await conn.query("COMMIT");
+    } catch (e) { await conn.query("ROLLBACK"); throw e; } finally { conn.release(); }
+    sendJson(response, 200, { ok: true }); return true;
+  }
+  if (url.pathname === "/api/lesson-plans/assignments" && request.method === "GET") {
+    const result = await pool.query(`SELECT a.id,a.teacher_id,a.subject_id,u.display_name AS teacher_name,s.name AS subject_name
+      FROM lesson_plan_subject_assignments a JOIN users u ON u.id=a.teacher_id JOIN subjects s ON s.id=a.subject_id
+      WHERE $1 OR a.teacher_id=$2 ORDER BY u.display_name,s.name`, [admin.includes(actor.role), actor.id]);
+    sendJson(response, 200, { assignments: result.rows }); return true;
+  }
+  if (url.pathname === "/api/lesson-plans/assignments" && request.method === "POST") {
+    ensureSameOrigin(request); requireRole(actor, admin);
+    const body = await parseJson(request), teacherId = Number(body.teacherId), subjectId = Number(body.subjectId);
+    const valid = await pool.query(`SELECT u.id AS teacher_id,s.id AS subject_id FROM users u CROSS JOIN subjects s
+      WHERE u.id=$1 AND u.role='teacher' AND u.active=TRUE AND s.id=$2`, [teacherId,subjectId]);
+    if (!valid.rowCount) throw new HttpError(400, "Choose an active teacher and an existing subject.");
+    const result = await pool.query(`INSERT INTO lesson_plan_subject_assignments(teacher_id,subject_id,assigned_by)
+      VALUES($1,$2,$3) ON CONFLICT(teacher_id,subject_id) DO UPDATE SET assigned_by=EXCLUDED.assigned_by RETURNING id`, [teacherId,subjectId,actor.id]);
+    sendJson(response, 201, { ok: true, id: result.rows[0].id }); return true;
+  }
+  const deleteAssignment = url.pathname.match(/^\/api\/lesson-plans\/assignments\/(\d+)$/);
+  if (deleteAssignment && request.method === "DELETE") {
+    ensureSameOrigin(request); requireRole(actor, admin);
+    await pool.query("DELETE FROM lesson_plan_subject_assignments WHERE id=$1", [deleteAssignment[1]]);
+    sendJson(response, 200, { ok: true }); return true;
+  }
+  if (url.pathname === "/api/lesson-plans/generate" && request.method === "POST") {
+    ensureSameOrigin(request); requireRole(actor, admin);
+    const body = await parseJson(request), term = Number(body.termNumber);
+    if (![1,2,3].includes(term)) throw new HttpError(400, "Choose Term 1, 2, or 3.");
+    const setting = await pool.query("SELECT weeks,days_per_week,start_date FROM lesson_plan_term_settings WHERE term_number=$1", [term]);
+    if (!setting.rowCount) throw new HttpError(400, "Configure the term first.");
+    const cfg = setting.rows[0];
+    const assignments = await pool.query("SELECT teacher_id,subject_id FROM lesson_plan_subject_assignments");
+    const conn = await pool.connect(); let count = 0;
+    try {
+      await conn.query("BEGIN");
+      for (const a of assignments.rows) {
+        for (let w=1; w<=cfg.weeks; w++) for (let d=1; d<=cfg.days_per_week; d++) {
+          const start = new Date(`${String(cfg.start_date).slice(0,10)}T12:00:00Z`);
+          let cursor = new Date(start);
+          let remaining = (w-1)*cfg.days_per_week+(d-1);
+          while (remaining > 0) {
+            cursor.setUTCDate(cursor.getUTCDate()+1);
+            if (cfg.days_per_week >= 7 || (cfg.days_per_week === 6 ? cursor.getUTCDay() !== 0 : cursor.getUTCDay() !== 0 && cursor.getUTCDay() !== 6)) remaining--;
+          }
+          const dueDate = cursor.toISOString().slice(0,10);
+          await conn.query(`INSERT INTO lesson_plan_generated_tasks(term_number,week_number,day_number,teacher_id,subject_id,due_date)
+            VALUES($1,$2,$3,$4,$5,$6::date) ON CONFLICT DO NOTHING`,
+            [term,w,d,a.teacher_id,a.subject_id,dueDate]);
+          count++;
+        }
+      }
+      await conn.query("COMMIT");
+    } catch(e) { await conn.query("ROLLBACK"); throw e; } finally { conn.release(); }
+    sendJson(response, 200, { ok:true, generatedOrExisting:count }); return true;
+  }
+  if (url.pathname === "/api/lesson-plans/tasks" && request.method === "GET") {
+    const term = Number(url.searchParams.get("term") || 1);
+    if (![1,2,3].includes(term)) throw new HttpError(400, "Invalid term.");
+    const result = await pool.query(`SELECT t.id,t.term_number,t.week_number,t.day_number,t.due_date,t.teacher_id,t.subject_id,
+      u.display_name AS teacher_name,s.name AS subject_name,x.id AS upload_id,x.file_name,x.file_size,x.status,x.admin_feedback,x.submitted_at
+      FROM lesson_plan_generated_tasks t JOIN users u ON u.id=t.teacher_id JOIN subjects s ON s.id=t.subject_id
+      LEFT JOIN lesson_plan_uploads x ON x.task_id=t.id
+      WHERE t.term_number=$1 AND ($2 OR t.teacher_id=$3)
+      ORDER BY u.display_name,s.name,t.week_number,t.day_number`, [term,admin.includes(actor.role),actor.id]);
+    sendJson(response, 200, { tasks: result.rows }); return true;
+  }
+  const uploadMatch = url.pathname.match(/^\/api\/lesson-plans\/tasks\/(\d+)\/upload$/);
+  if (uploadMatch && request.method === "POST") {
+    ensureSameOrigin(request); requireRole(actor, ["teacher"]);
+    const body = await parseJson(request);
+    if (!body.file || typeof body.file.name !== "string" || typeof body.file.data !== "string") throw new HttpError(400, "Choose a lesson-plan file.");
+    const data = Buffer.from(body.file.data, "base64");
+    if (!data.length || data.length > 8*1024*1024) throw new HttpError(413, "File must be no larger than 8 MB.");
+    const task = await pool.query("SELECT id FROM lesson_plan_generated_tasks WHERE id=$1 AND teacher_id=$2", [uploadMatch[1],actor.id]);
+    if (!task.rowCount) throw new HttpError(404, "Lesson-plan task not found for your account.");
+    await pool.query(`INSERT INTO lesson_plan_uploads(task_id,teacher_id,file_name,mime_type,file_size,file_data,status,admin_feedback,submitted_at,reviewed_by,reviewed_at)
+      VALUES($1,$2,$3,$4,$5,$6,'Submitted','',NOW(),NULL,NULL)
+      ON CONFLICT(task_id) DO UPDATE SET file_name=EXCLUDED.file_name,mime_type=EXCLUDED.mime_type,file_size=EXCLUDED.file_size,file_data=EXCLUDED.file_data,status='Submitted',admin_feedback='',submitted_at=NOW(),reviewed_by=NULL,reviewed_at=NULL`,
+      [uploadMatch[1],actor.id,path.basename(body.file.name).slice(0,255),String(body.file.type||"application/octet-stream").slice(0,150),data.length,data]);
+    sendJson(response, 201, {ok:true}); return true;
+  }
+  const fileMatch = url.pathname.match(/^\/api\/lesson-plans\/uploads\/(\d+)\/file$/);
+  if (fileMatch && request.method === "GET") {
+    const result = await pool.query("SELECT teacher_id,file_name,mime_type,file_data FROM lesson_plan_uploads WHERE id=$1",[fileMatch[1]]);
+    if (!result.rowCount) throw new HttpError(404,"File not found.");
+    if (!admin.includes(actor.role) && Number(result.rows[0].teacher_id)!==Number(actor.id)) throw new HttpError(403,"You cannot access this file.");
+    const f=result.rows[0];
+    response.writeHead(200,{"Content-Type":f.mime_type,"Content-Disposition":`attachment; filename*=UTF-8''${encodeURIComponent(f.file_name)}`,"Cache-Control":"no-store","X-Content-Type-Options":"nosniff"});
+    response.end(f.file_data); return true;
+  }
+  const reviewMatch = url.pathname.match(/^\/api\/lesson-plans\/uploads\/(\d+)\/review$/);
+  if (reviewMatch && request.method === "POST") {
+    ensureSameOrigin(request); requireRole(actor,admin);
+    const body=await parseJson(request), status=body.status;
+    if (!["Approved","For Revision"].includes(status)) throw new HttpError(400,"Choose Approved or For Revision.");
+    await pool.query("UPDATE lesson_plan_uploads SET status=$1,admin_feedback=$2,reviewed_by=$3,reviewed_at=NOW() WHERE id=$4",
+      [status,String(body.feedback||"").slice(0,2000),actor.id,reviewMatch[1]]);
+    sendJson(response,200,{ok:true}); return true;
+  }
+  return false;
+}
+
 async function handleTaskRoutes(request, response, url, actor) {
   if (request.method === "GET" && url.pathname === "/api/tasks") {
     const where = actor.role === "student"
@@ -753,6 +879,7 @@ async function handleApi(request, response, url) {
       handleMessageRoutes,
       handleAnnouncementRoutes,
       handleSubjectRoutes,
+      handleLessonPlanRoutes,
       handleTaskRoutes,
     ];
     for (const handler of handlers) {

@@ -105,6 +105,7 @@ function updateNavigation() {
   document.querySelector("#tasks-nav-label").textContent = currentUser.role === "student" ? "My tasks" : "Tasks";
   document.querySelector("#announcement-compose-panel").hidden = currentUser.role === "student";
   document.querySelector("#task-compose-panel").hidden = currentUser.role === "student";
+  document.querySelector("#lesson-plan-admin-panel").hidden = !["admin","developer"].includes(currentUser.role);
   document.querySelector("#subject-compose-panel").hidden = currentUser.role !== "teacher";
   document.querySelector("#add-user-button").hidden = !canManage;
   document.querySelector("#active-role").textContent = roleLabels[currentUser.role];
@@ -271,6 +272,48 @@ function renderTasks() {
   document.querySelector("#tasks-description").textContent = currentUser.role === "student" ? "Tasks assigned to you and work shared with your classes." : "Admins assign tasks to teachers; teachers assign work to enrolled students.";
 }
 
+
+let lessonPlanTasks = [];
+let lessonPlanAssignments = [];
+function isLpAdmin() { return ["admin","developer"].includes(currentUser?.role); }
+function renderLessonPlanTasks() {
+  const host=document.querySelector("#lesson-plan-task-list");
+  if (!host) return;
+  host.innerHTML=lessonPlanTasks.length ? lessonPlanTasks.map(t => {
+    const submitted=!!t.upload_id;
+    const isOwner=String(t.teacher_id)===String(currentUser.id);
+    const controls=isLpAdmin()
+      ? (submitted ? `<div class="attachment-list"><a class="action-link" href="/api/lesson-plans/uploads/${t.upload_id}/file" target="_blank" rel="noopener">Download ${escapeHtml(t.file_name)}</a><p>Status: <strong>${escapeHtml(t.status)}</strong>${t.admin_feedback ? ` · ${escapeHtml(t.admin_feedback)}` : ""}</p><form class="lp-review-form" data-upload-id="${t.upload_id}"><select name="status"><option>Approved</option><option>For Revision</option></select><input name="feedback" maxlength="2000" placeholder="Feedback (optional)"><button class="button button-primary" type="submit">Save review</button></form></div>` : `<small>Waiting for teacher upload.</small>`)
+      : `<form class="lp-upload-form" data-task-id="${t.id}"><label class="login-field">Lesson-plan file<input type="file" name="file" required></label><button class="button button-primary" type="submit">${submitted ? "Upload revised lesson plan" : "Upload lesson plan"}</button>${submitted ? `<p>Status: <strong>${escapeHtml(t.status)}</strong>${t.admin_feedback ? ` · Admin feedback: ${escapeHtml(t.admin_feedback)}` : ""}</p><small>Previously submitted: ${formatDate(t.submitted_at)}</small>` : ""}</form>`;
+    return `<article class="content-card"><div class="content-card-heading"><h3>${escapeHtml(t.subject_name)} · Week ${t.week_number}, Day ${t.day_number}</h3><span class="deadline-chip">Due ${formatDate(t.due_date)}</span></div>${isLpAdmin()?`<small>Teacher: ${escapeHtml(t.teacher_name)}</small>`:""}${controls}</article>`;
+  }).join("") : emptyFeed(isLpAdmin() ? "No generated tasks for this term. Assign subjects and generate tasks first." : "No lesson-plan tasks assigned to your account for this term.");
+}
+async function refreshLessonPlans() {
+  if (!currentUser) return;
+  try {
+    const term=document.querySelector("#lp-view-term")?.value || "1";
+    const [settings, assignments, taskResult] = await Promise.all([
+      api("/api/lesson-plans/settings"),
+      api("/api/lesson-plans/assignments"),
+      api(`/api/lesson-plans/tasks?term=${term}`)
+    ]);
+    lessonPlanAssignments=assignments.assignments;
+    lessonPlanTasks=taskResult.tasks;
+    settings.settings.forEach(s=>{
+      const n=s.term_number;
+      document.querySelector(`#lp-t${n}-weeks`).value=s.weeks;
+      document.querySelector(`#lp-t${n}-days`).value=s.days_per_week;
+      document.querySelector(`#lp-t${n}-start`).value=String(s.start_date).slice(0,10);
+    });
+    const teacherSelect=document.querySelector("#lp-teacher");
+    teacherSelect.innerHTML=directory.filter(u=>u.role==="teacher" && u.active).map(u=>`<option value="${u.id}">${escapeHtml(u.displayName)}</option>`).join("");
+    const subjectSelect=document.querySelector("#lp-subject");
+    subjectSelect.innerHTML=subjects.map(s=>`<option value="${s.id}">${escapeHtml(s.name)}${s.teacher_name?` — ${escapeHtml(s.teacher_name)}`:""}</option>`).join("");
+    document.querySelector("#lp-assignment-list").innerHTML=lessonPlanAssignments.length ? lessonPlanAssignments.map(a=>`<article class="content-card"><div class="content-card-heading"><h3>${escapeHtml(a.teacher_name)} · ${escapeHtml(a.subject_name)}</h3><button class="action-link danger-link" type="button" data-lp-remove="${a.id}">Remove</button></div></article>`).join("") : emptyFeed("No teacher-subject assignments yet.");
+    renderLessonPlanTasks();
+  } catch(error) { setGlobalError(error.message); }
+}
+
 async function refreshUsers() {
   try {
     const result = await api("/api/users");
@@ -313,6 +356,7 @@ async function refreshTasks() {
     renderSubjects();
     renderTasks();
     renderOverview();
+    await refreshLessonPlans();
   } catch (error) {
     setGlobalError(error.message);
   }
@@ -605,6 +649,48 @@ document.querySelector("#password-form").addEventListener("submit", async (event
   } catch (requestError) {
     error.textContent = requestError.message;
     error.hidden = false;
+  }
+});
+
+
+document.querySelector("#lp-settings-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const settings=[1,2,3].map(n=>({termNumber:n,weeks:Number(document.querySelector(`#lp-t${n}-weeks`).value),daysPerWeek:Number(document.querySelector(`#lp-t${n}-days`).value),startDate:document.querySelector(`#lp-t${n}-start`).value}));
+  try { await api("/api/lesson-plans/settings",{method:"POST",body:{settings}}); showToast("Term settings saved."); }
+  catch(e){setGlobalError(e.message);}
+});
+document.querySelector("#lp-assignment-form").addEventListener("submit", async (event)=>{
+  event.preventDefault();
+  try { await api("/api/lesson-plans/assignments",{method:"POST",body:{teacherId:document.querySelector("#lp-teacher").value,subjectId:document.querySelector("#lp-subject").value}}); await refreshLessonPlans(); showToast("Subject assigned to teacher."); }
+  catch(e){setGlobalError(e.message);}
+});
+document.querySelector("#lp-generate-form").addEventListener("submit", async (event)=>{
+  event.preventDefault();
+  try { const result=await api("/api/lesson-plans/generate",{method:"POST",body:{termNumber:Number(document.querySelector("#lp-generate-term").value)}}); await refreshLessonPlans(); showToast(`Task generation complete. ${result.generatedOrExisting} task slots processed.`); }
+  catch(e){setGlobalError(e.message);}
+});
+document.querySelector("#lp-view-term").addEventListener("change",refreshLessonPlans);
+document.querySelector("#lp-assignment-list").addEventListener("click",async(event)=>{
+  const button=event.target.closest("[data-lp-remove]"); if(!button)return;
+  if(!confirm("Remove this teacher-subject assignment? Existing generated tasks are retained."))return;
+  try { await api(`/api/lesson-plans/assignments/${button.dataset.lpRemove}`,{method:"DELETE"}); await refreshLessonPlans(); showToast("Assignment removed."); }
+  catch(e){setGlobalError(e.message);}
+});
+document.querySelector("#lesson-plan-task-list").addEventListener("submit",async(event)=>{
+  const uploadForm=event.target.closest(".lp-upload-form");
+  const reviewForm=event.target.closest(".lp-review-form");
+  if(uploadForm){
+    event.preventDefault();
+    const file=uploadForm.querySelector('input[type="file"]').files[0];
+    if(!file)return;
+    if(file.size>8*1024*1024){setGlobalError("Lesson-plan files must be 8 MB or smaller.");return;}
+    try { await api(`/api/lesson-plans/tasks/${uploadForm.dataset.taskId}/upload`,{method:"POST",body:{file:await fileToPayload(file)}}); await refreshLessonPlans(); showToast("Lesson plan uploaded successfully."); }
+    catch(e){setGlobalError(e.message);}
+  } else if(reviewForm){
+    event.preventDefault();
+    const data=new FormData(reviewForm);
+    try { await api(`/api/lesson-plans/uploads/${reviewForm.dataset.uploadId}/review`,{method:"POST",body:{status:data.get("status"),feedback:data.get("feedback")}}); await refreshLessonPlans(); showToast("Lesson-plan review saved."); }
+    catch(e){setGlobalError(e.message);}
   }
 });
 

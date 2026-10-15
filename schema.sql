@@ -118,3 +118,54 @@ CREATE TABLE IF NOT EXISTS task_attachments (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS task_attachments_task_idx ON task_attachments (task_id);
+
+
+-- Three-term lesson-plan scheduling and file submissions.
+CREATE TABLE IF NOT EXISTS lesson_plan_term_settings (
+  term_number SMALLINT PRIMARY KEY CHECK (term_number BETWEEN 1 AND 3),
+  weeks INTEGER NOT NULL DEFAULT 10 CHECK (weeks BETWEEN 1 AND 52),
+  days_per_week INTEGER NOT NULL DEFAULT 5 CHECK (days_per_week BETWEEN 1 AND 7),
+  start_date DATE NOT NULL DEFAULT CURRENT_DATE,
+  updated_by BIGINT REFERENCES users(id) ON DELETE SET NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+INSERT INTO lesson_plan_term_settings(term_number,weeks,days_per_week,start_date)
+VALUES (1,10,5,CURRENT_DATE),(2,10,5,CURRENT_DATE + 70),(3,10,5,CURRENT_DATE + 140)
+ON CONFLICT (term_number) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS lesson_plan_subject_assignments (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  teacher_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  subject_id BIGINT NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
+  assigned_by BIGINT NOT NULL REFERENCES users(id),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(teacher_id,subject_id)
+);
+CREATE TABLE IF NOT EXISTS lesson_plan_generated_tasks (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  term_number SMALLINT NOT NULL CHECK (term_number BETWEEN 1 AND 3),
+  week_number INTEGER NOT NULL,
+  day_number INTEGER NOT NULL,
+  teacher_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  subject_id BIGINT NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
+  due_date DATE NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(term_number,week_number,day_number,teacher_id,subject_id)
+);
+CREATE TABLE IF NOT EXISTS lesson_plan_uploads (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  task_id BIGINT NOT NULL REFERENCES lesson_plan_generated_tasks(id) ON DELETE CASCADE,
+  teacher_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  file_name TEXT NOT NULL,
+  mime_type TEXT NOT NULL DEFAULT 'application/octet-stream',
+  file_size BIGINT NOT NULL,
+  file_data BYTEA NOT NULL,
+  status TEXT NOT NULL DEFAULT 'Submitted' CHECK(status IN ('Submitted','Approved','For Revision')),
+  admin_feedback TEXT NOT NULL DEFAULT '',
+  submitted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  reviewed_by BIGINT REFERENCES users(id) ON DELETE SET NULL,
+  reviewed_at TIMESTAMPTZ,
+  UNIQUE(task_id)
+);
+CREATE INDEX IF NOT EXISTS lp_generated_teacher_idx ON lesson_plan_generated_tasks(teacher_id,term_number,week_number,day_number);
+CREATE INDEX IF NOT EXISTS lp_upload_status_idx ON lesson_plan_uploads(status,submitted_at DESC);
