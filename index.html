@@ -166,18 +166,28 @@
           </section>
 
           <section class="portal-view" id="view-lesson-plans" hidden>
-            <div class="section-heading"><div><h2>Lesson-plan management</h2><p>Configure the three terms, assign subjects to teachers, and review all lesson-plan submissions by subject.</p></div></div>
+            <div class="section-heading"><div><h2>Lesson-plan management</h2><p id="lp-page-subtitle">Configure the three terms, assign subjects to teachers, and review all lesson-plan submissions by subject.</p></div></div>
             <section class="panel term-filter-panel"><label class="login-field" for="lp-view-term">Selected term<select id="lp-view-term"><option value="">Choose a term to view lesson plans</option><option value="1">Term 1</option><option value="2">Term 2</option><option value="3">Term 3</option></select></label></section>
-            <div id="lp-dashboard-stats" class="overview-stats"></div>
-            <section class="panel" id="lp-progress-panel" hidden>
-              <div class="panel-heading"><div><h2>Progress by subject</h2><p>Choose a subject to open its daily tasks and submissions. Details stay hidden until selected.</p></div></div>
-              <div class="table-scroll"><table class="data-table"><thead><tr><th>Subject</th><th>Teacher(s)</th><th>Tasks</th><th>Submitted</th><th>Approved</th><th>Progress</th></tr></thead><tbody id="lp-subject-progress"></tbody></table></div>
+
+            <nav class="lp-tabs" id="lp-tabs" role="tablist" aria-label="Lesson-plan sections" data-admin-only hidden>
+              <button type="button" role="tab" class="lp-tab is-active" data-lp-tab="overview" aria-selected="true">Overview</button>
+              <button type="button" role="tab" class="lp-tab" data-lp-tab="schedule" aria-selected="false">Schedule</button>
+              <button type="button" role="tab" class="lp-tab" data-lp-tab="progress" aria-selected="false">Progress</button>
+            </nav>
+
+            <!-- OVERVIEW: term numbers + assigned teacher-subjects -->
+            <div data-lp-pane="overview">
+              <div id="lp-term-prompt" class="lp-term-prompt" hidden><strong>Choose a term first.</strong> Pick Term 1, 2 or 3 above to see the lesson plans for that term.</div>
+              <div id="lp-dashboard-stats" class="overview-stats"></div>
+              <div id="lp-status-summary" class="lp-status-summary" hidden></div>
+            </div>
+            <section class="panel compose-panel" data-lp-pane="overview" data-admin-only id="lp-assignments-panel" hidden>
+              <div class="panel-heading"><div><h2>Assigned teacher-subjects</h2><p>Existing assignments and calendars are retained.</p></div></div>
+              <div id="lp-assignment-list" class="content-feed"></div>
             </section>
-            <section class="panel" id="lp-teacher-progress-panel" hidden>
-              <div class="panel-heading"><div><h2>Progress by teacher</h2><p>Choose a teacher first to open their subjects and lesson-plan submissions for the selected term.</p></div></div>
-              <div class="table-scroll"><table class="data-table"><thead><tr><th>Teacher</th><th>Subjects</th><th>Tasks</th><th>Submitted</th><th>Approved</th><th>Progress</th></tr></thead><tbody id="lp-teacher-progress"></tbody></table></div>
-            </section>
-            <section class="panel compose-panel" id="lesson-plan-admin-panel" hidden>
+
+            <!-- SCHEDULE: generate daily tasks -->
+            <section class="panel compose-panel" data-lp-pane="schedule" id="lesson-plan-admin-panel" hidden>
               <div class="panel-heading"><div><h2>Lesson-plan schedule</h2><p>Configure the three terms, assign subjects to teachers, and generate daily upload tasks for the selected term only.</p></div></div>
               <form id="lp-generate-form" class="portal-form">
                 <div class="form-row"><label class="login-field" for="lp-generate-term">Term<select id="lp-generate-term" required><option value="1">Term 1</option><option value="2">Term 2</option><option value="3">Term 3</option></select></label><label class="login-field" for="lp-teacher">Teacher<select id="lp-teacher" required></select></label></div>
@@ -185,15 +195,29 @@
                 <label class="login-field" for="lp-start-date">First lesson-plan date<input id="lp-start-date" type="date" required /></label>
                 <div class="form-actions"><span class="form-hint">Only the selected term, teacher, and subject are affected. This is the administrator schedule-generation control.</span><button class="button button-primary" type="submit">Save schedule and generate daily tasks</button></div>
               </form>
-              <div class="panel-heading"><div><h2>Assigned teacher-subjects</h2><p>Existing assignments and calendars are retained.</p></div></div>
-              <div id="lp-assignment-list" class="content-feed"></div>
             </section>
-            <section class="panel compose-panel" id="lesson-plan-task-panel" hidden>
-              <div class="panel-heading"><div><h2 id="lp-task-detail-heading">Lesson-plan details</h2><p>Daily tasks, submitted PDFs, approval status, feedback, and revision history for the selected teacher and subject.</p></div><button type="button" class="button button-secondary" id="lp-close-details">Close details</button></div>
-              <div id="lesson-plan-task-list" class="content-feed"></div>
-            </section>
-            <div id="lp-teacher-task-list" class="content-feed"></div>
 
+            <!-- PROGRESS: by subject, by teacher, details -->
+            <section class="panel" data-lp-pane="progress" id="lp-progress-panel" hidden>
+              <div class="panel-heading"><div><h2>Progress by subject</h2><p>Choose a subject to open its calendar and submissions. Details stay hidden until selected.</p></div></div>
+              <div class="table-scroll"><table class="data-table lp-table"><thead><tr><th>Subject</th><th>Teacher(s)</th><th>Tasks</th><th>Submitted</th><th>Approved</th><th>Overdue</th><th>Progress</th></tr></thead><tbody id="lp-subject-progress"></tbody></table></div>
+            </section>
+            <section class="panel" data-lp-pane="progress" id="lp-teacher-progress-panel" hidden>
+              <div class="panel-heading"><div><h2>Progress by teacher</h2><p>Choose a teacher first to open their subjects and lesson-plan submissions for the selected term.</p></div></div>
+              <div class="table-scroll"><table class="data-table lp-table"><thead><tr><th>Teacher</th><th>Subjects</th><th>Tasks</th><th>Submitted</th><th>Approved</th><th>Overdue</th><th>Progress</th></tr></thead><tbody id="lp-teacher-progress"></tbody></table></div>
+            </section>
+            <section class="panel compose-panel" data-lp-pane="progress" id="lesson-plan-task-panel" hidden>
+              <div class="panel-heading"><div><h2 id="lp-task-detail-heading">Lesson-plan details</h2><p>Click a day on the calendar to open its PDF, approval status, feedback, and revision history.</p></div><button type="button" class="button button-secondary" id="lp-close-details">Close details</button></div>
+              <div id="lesson-plan-task-list" class="lp-cal-host"></div>
+            </section>
+
+            <!-- TEACHER: one calendar per subject -->
+            <div id="lp-teacher-task-list" class="lp-cal-host"></div>
+
+            <dialog id="lp-day-dialog" class="lp-dialog" aria-labelledby="lp-day-title">
+              <div class="lp-dialog-head"><div><small id="lp-day-kicker"></small><h3 id="lp-day-title">Lesson plan</h3></div><button type="button" class="lp-dialog-close" id="lp-day-close" aria-label="Close">&times;</button></div>
+              <div id="lp-day-body" class="lp-dialog-body"></div>
+            </dialog>
           </section>
 
           <section class="portal-view" id="view-documents" hidden>

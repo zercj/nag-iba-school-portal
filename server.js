@@ -807,7 +807,7 @@ async function handleLessonPlanRoutes(request, response, url, actor) {
   if (url.pathname === "/api/lesson-plans/tasks" && request.method === "GET") {
     const term = Number(url.searchParams.get("term") || 1);
     if (![1,2,3].includes(term)) throw new HttpError(400, "Invalid term.");
-    const result = await pool.query(`SELECT t.id,t.term_number,t.week_number,t.day_number,t.due_date,t.teacher_id,t.subject_id,
+    const result = await pool.query(`SELECT t.id,t.term_number,t.week_number,t.day_number,to_char(t.due_date,'YYYY-MM-DD') AS due_date,t.teacher_id,t.subject_id,
       u.display_name AS teacher_name,s.name AS subject_name,x.id AS upload_id,x.file_name,x.file_size,
       CASE WHEN x.id IS NOT NULL THEN x.status WHEN t.due_date < CURRENT_DATE THEN 'Overdue' ELSE 'Awaiting Upload' END AS status,
       x.admin_feedback,x.admin_revision_file_name,x.submitted_at,

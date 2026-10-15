@@ -107,7 +107,13 @@ function updateNavigation() {
   document.querySelector("#announcement-compose-panel").hidden = currentUser.role === "student";
   document.querySelector("#task-compose-panel").hidden = currentUser.role === "student";
   document.querySelector("#lesson-plans-nav").hidden = !["admin","developer","teacher"].includes(currentUser.role);
-  document.querySelector("#lesson-plan-admin-panel").hidden = !["admin","developer"].includes(currentUser.role);
+  const lpAdminRole = ["admin","developer"].includes(currentUser.role);
+  document.querySelectorAll("#view-lesson-plans [data-admin-only]").forEach(el => { el.hidden = !lpAdminRole; });
+  document.querySelector("#lesson-plan-admin-panel").hidden = !lpAdminRole;
+  document.querySelector("#lp-page-subtitle").textContent = lpAdminRole
+    ? "Configure the three terms, assign subjects to teachers, and review all lesson-plan submissions by subject."
+    : "Choose a term, pick one of your subjects, then select a day on the calendar to open or upload that day's lesson plan.";
+  setLpTab("overview");
   document.querySelector("#subject-compose-panel").hidden = currentUser.role !== "teacher";
   document.querySelector("#add-user-button").hidden = !canManage;
   document.querySelector("#active-role").textContent = roleLabels[currentUser.role];
@@ -276,55 +282,169 @@ function renderTasks() {
 }
 
 
+/* ---------- Lesson plans: status model ---------- */
+const LP_MONTHS=["January","February","March","April","May","June","July","August","September","October","November","December"];
+const LP_WEEKDAYS=["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+function lpInfo(t){
+  const s=String(t.status||"").toLowerCase();
+  const late=!!t.submitted_late;
+  if(s==="overdue") return {tone:"overdue",label:"Overdue",short:"Overdue"};
+  if(s==="completed") return late?{tone:"done-late",label:"Completed late",short:"Done late"}:{tone:"done",label:"Completed on time",short:"Done"};
+  if(s==="approved") return late?{tone:"done-late",label:"Approved · completed late",short:"Done late"}:{tone:"done",label:"Approved · on time",short:"Approved"};
+  if(s==="late") return {tone:"done-late",label:"Submitted late",short:"Late"};
+  if(s==="for revision") return {tone:"revision",label:"For revision",short:"Revise"};
+  if(s==="submitted") return {tone:"review",label:"Submitted · awaiting review",short:"In review"};
+  return {tone:"pending",label:"Awaiting upload",short:"To do"};
+}
+const lpDay=t=>String(t.due_date).slice(0,10);
+function lpDateLabel(iso,opts){ const [y,m,d]=iso.split("-").map(Number); return new Intl.DateTimeFormat(undefined,opts||{weekday:"long",month:"long",day:"numeric",year:"numeric"}).format(new Date(y,m-1,d)); }
+function lpChip(t){ const i=lpInfo(t); return `<span class="lp-chip lp-${i.tone}">${i.label}</span>`; }
+function lpTodayIso(){ const n=new Date(); return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,"0")}-${String(n.getDate()).padStart(2,"0")}`; }
+
+/* ---------- Lesson plans: state ---------- */
 let lessonPlanTasks = [];
 let lessonPlanAssignments = [];
 let selectedLpSubject = null;
 let selectedLpTeacherId = null;
 let selectedLpSubjectId = null;
+let lpTeacherSubjectId = null;
+const lpCal = { teacher:{month:null,key:""}, admin:{month:null,key:""} };
+let lpOpenDay = null;
 function isLpAdmin() { return ["admin","developer"].includes(currentUser?.role); }
+function lpTerm(){ return document.querySelector("#lp-view-term")?.value || ""; }
+
+function setLpTab(tab){
+  const view=document.querySelector("#view-lesson-plans");
+  view.dataset.lpTab=tab;
+  view.querySelectorAll("[data-lp-pane]").forEach(el=>el.classList.toggle("lp-pane-off",el.dataset.lpPane!==tab));
+  view.querySelectorAll(".lp-tab").forEach(b=>{const on=b.dataset.lpTab===tab;b.classList.toggle("is-active",on);b.setAttribute("aria-selected",on);});
+}
+
+/* ---------- Lesson plans: calendar ---------- */
+function lpCalendarMarkup(scope, tasks){
+  const state=lpCal[scope];
+  const days=new Map();
+  tasks.forEach(t=>{const k=lpDay(t); if(!days.has(k))days.set(k,[]); days.get(k).push(t);});
+  const keys=[...days.keys()].sort();
+  if(!keys.length) return emptyFeed("No calendar entries for this term and selection.");
+  const monthOf=k=>k.slice(0,7);
+  const first=monthOf(keys[0]), last=monthOf(keys[keys.length-1]);
+  const dataKey=`${keys[0]}|${keys[keys.length-1]}|${tasks.length&&tasks[0].subject_id}`;
+  if(state.key!==dataKey){ state.key=dataKey; const nowM=lpTodayIso().slice(0,7); state.month = (nowM>=first&&nowM<=last)?nowM:first; }
+  if(state.month<first) state.month=first; if(state.month>last) state.month=last;
+  const [y,m]=state.month.split("-").map(Number);
+  const firstDow=(new Date(y,m-1,1).getDay()+6)%7;
+  const dim=new Date(y,m,0).getDate();
+  const today=lpTodayIso();
+  let cells=LP_WEEKDAYS.map(d=>`<div class="lp-cal-dow">${d}</div>`).join("");
+  for(let i=0;i<firstDow;i++) cells+=`<div class="lp-cal-cell lp-cal-empty"></div>`;
+  for(let d=1; d<=dim; d++){
+    const iso=`${y}-${String(m).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
+    const list=days.get(iso);
+    const todayCls=iso===today?" is-today":"";
+    if(!list){ cells+=`<div class="lp-cal-cell lp-cal-none${todayCls}"><span class="lp-cal-num">${d}</span></div>`; continue; }
+    const t=list[0], info=lpInfo(t);
+    const wk=list.length>1?`${list.length} plans`:`Wk ${t.week_number} · D${t.day_number}`;
+    cells+=`<button type="button" class="lp-cal-cell lp-cal-task lp-${info.tone}${todayCls}" data-lp-day="${iso}" data-lp-scope="${scope}" aria-label="${escapeHtml(lpDateLabel(iso))}: ${escapeHtml(info.label)}"><span class="lp-cal-num">${d}</span><span class="lp-cal-wk">${wk}</span><span class="lp-cal-status">${info.short}</span></button>`;
+  }
+  const counts={}; tasks.forEach(t=>{const k=lpInfo(t).tone; counts[k]=(counts[k]||0)+1;});
+  const done=(counts.done||0)+(counts["done-late"]||0);
+  const pct=tasks.length?Math.round(done/tasks.length*100):0;
+  const legend=[["overdue","Overdue"],["done","Completed on time"],["done-late","Completed late"],["review","In review"],["revision","For revision"],["pending","Awaiting upload"]].map(([k,l])=>`<span class="lp-legend-item"><i class="lp-dot lp-${k}"></i>${l}${counts[k]?` <b>${counts[k]}</b>`:""}</span>`).join("");
+  return `<div class="lp-cal">
+    <div class="lp-cal-bar"><div class="lp-cal-nav"><button type="button" class="lp-nav-btn" data-lp-cal-nav="-1" data-lp-scope="${scope}" aria-label="Previous month" ${state.month<=first?"disabled":""}>&#8249;</button><h3>${LP_MONTHS[m-1]} ${y}</h3><button type="button" class="lp-nav-btn" data-lp-cal-nav="1" data-lp-scope="${scope}" aria-label="Next month" ${state.month>=last?"disabled":""}>&#8250;</button></div>
+    <div class="lp-cal-progress" title="${done} of ${tasks.length} completed"><span>${done}/${tasks.length} completed</span><div class="lp-bar"><i style="width:${pct}%"></i></div></div></div>
+    <div class="lp-cal-grid">${cells}</div>
+    <div class="lp-legend">${legend}</div>
+    <p class="lp-cal-hint">Select a highlighted day to open that day's lesson plan.</p></div>`;
+}
+
+function lpAdminVisibleTasks(){
+  return lessonPlanTasks.filter(t=> selectedLpTeacherId!=null
+    ? (String(t.teacher_id)===String(selectedLpTeacherId) && (selectedLpSubjectId==null || String(t.subject_id)===String(selectedLpSubjectId)))
+    : (selectedLpSubject && t.subject_name===selectedLpSubject && (selectedLpSubjectId==null || String(t.subject_id)===String(selectedLpSubjectId))));
+}
+
 function renderLessonPlanTasks() {
   const admin=isLpAdmin();
-  const panel=document.querySelector("#lesson-plan-task-panel");
-  const host=document.querySelector(admin ? "#lesson-plan-task-list" : "#lp-teacher-task-list");
-  if (!host) return;
-  const visibleTasks=admin ? lessonPlanTasks.filter(t=> selectedLpTeacherId!=null ? (String(t.teacher_id)===String(selectedLpTeacherId) && (selectedLpSubjectId==null || String(t.subject_id)===String(selectedLpSubjectId))) : (selectedLpSubject && t.subject_name===selectedLpSubject && (selectedLpSubjectId==null || String(t.subject_id)===String(selectedLpSubjectId)))) : lessonPlanTasks;
-  if (admin && panel) panel.hidden=!selectedLpSubject;
-  const grouped=new Map();
-  for (const t of visibleTasks) {
-    const key=`${t.subject_name}||${t.week_number}`;
-    if(!grouped.has(key)) grouped.set(key,{subject:t.subject_name,week:t.week_number,tasks:[]});
-    grouped.get(key).tasks.push(t);
+  const term=lpTerm();
+  if(admin){
+    const panel=document.querySelector("#lesson-plan-task-panel");
+    const host=document.querySelector("#lesson-plan-task-list");
+    if(!term||!selectedLpSubject){ panel.hidden=true; host.innerHTML=""; }
+    else { panel.hidden=false; host.innerHTML=lpCalendarMarkup("admin",lpAdminVisibleTasks()); }
+  } else {
+    const host=document.querySelector("#lp-teacher-task-list");
+    if(!term){ host.innerHTML=""; return; }
+    const subjects=new Map();
+    lessonPlanTasks.forEach(t=>{ if(!subjects.has(t.subject_id)) subjects.set(t.subject_id,{id:t.subject_id,name:t.subject_name,tasks:[]}); subjects.get(t.subject_id).tasks.push(t); });
+    if(!subjects.size){ host.innerHTML=`<section class="panel lp-cal-panel">${emptyFeed("No lesson-plan calendar assigned to you for this term yet.")}</section>`; return; }
+    if(!subjects.has(lpTeacherSubjectId)) lpTeacherSubjectId=[...subjects.keys()][0];
+    const pills=[...subjects.values()].map(s=>{
+      const over=s.tasks.filter(t=>lpInfo(t).tone==="overdue").length;
+      return `<button type="button" class="lp-subject-pill${s.id===lpTeacherSubjectId?" is-active":""}" data-lp-subject-pill="${s.id}">${escapeHtml(s.name)}${over?`<span class="lp-pill-alert" title="${over} overdue">${over}</span>`:""}</button>`;
+    }).join("");
+    host.innerHTML=`<section class="panel lp-cal-panel"><div class="lp-subject-pills" role="tablist" aria-label="Your subjects">${pills}</div>${lpCalendarMarkup("teacher",subjects.get(lpTeacherSubjectId).tasks)}</section>`;
   }
-  const weekMarkup=visibleTasks.length ? [...grouped.values()].map(group=>`<section class="panel calendar-week"><div class="panel-heading"><div><h3>${escapeHtml(group.subject)} · Week ${group.week}</h3><p>Daily lesson-plan calendar</p></div></div><div class="calendar-days">${group.tasks.map(t=>{
-    const submitted=!!t.upload_id;
-    const state=String(t.status||"").toLowerCase();
-    const late=state==="late" || state==="overdue";
-    const completedLate=state==="completed" && !!t.submitted_late;
-    const dayTone=completedLate?"calendar-day-completed-late":state==="completed"?"calendar-day-completed":late?"calendar-day-late":"";
-    const controls=admin
-      ? (submitted ? `<div class="attachment-list"><a class="action-link" href="/api/lesson-plans/uploads/${t.upload_id}/file" target="_blank" rel="noopener">Open PDF: ${escapeHtml(t.file_name)}</a><p>Status: <strong>${escapeHtml(t.status)}</strong>${t.admin_feedback ? ` · ${escapeHtml(t.admin_feedback)}` : ""}</p>${t.admin_revision_file_name ? `<p><a class="action-link" href="/api/lesson-plans/uploads/${t.upload_id}/revision-file" target="_blank" rel="noopener">Open revision instructions PDF: ${escapeHtml(t.admin_revision_file_name)}</a></p>` : ""}<p>Submitted: ${formatDate(t.submitted_at)}${Number(t.revision_count)>0 ? ` · ${t.revision_count} earlier revision(s)` : ""}</p>${["submitted","late"].includes(state) ? `<form class="lp-review-form" data-upload-id="${t.upload_id}"><label class="login-field">Decision<select name="status"><option>Approved</option><option>For Revision</option></select></label><label class="login-field lp-revision-file-field" hidden>Upload revision instructions (PDF only, max 8 MB)<input name="revisionFile" type="file" accept="application/pdf,.pdf"></label><button class="button button-primary" type="submit">Save review decision</button></form>` : `<p>${state==="approved" ? "Approved — waiting for teacher confirmation." : state==="completed" ? "Completed and confirmed by teacher." : "This submission is not awaiting review."}</p>`}${Number(t.revision_count)>0 ? `<details><summary>View previous revisions (${t.revision_count})</summary><div class="lp-history" data-history-task="${t.id}">Loading revision history…</div></details>` : ""}</div>` : `<p>Status: <strong>${escapeHtml(t.status)}</strong></p><small>Waiting for teacher upload.</small>`)
-      : (submitted && state !== "for revision"
-          ? `<div class="attachment-list"><p>Status: <strong>${escapeHtml(t.status)}</strong>${t.admin_feedback ? ` · ${escapeHtml(t.admin_feedback)}` : ""}</p><small>Submitted: ${formatDate(t.submitted_at)}</small>${state==="approved" ? `<p>The administrator approved this lesson plan. Confirm below to mark it completed.</p><button class="button button-primary lp-confirm-approval" data-upload-id="${t.upload_id}" type="button">Confirm approval and complete</button>` : state==="completed" ? `<p>Completed. Your approval has been confirmed.</p>` : `<p>Under review — your submission is locked until the administrator approves it or requests a revision.</p><button class="button" type="button" disabled>Under review</button>`}</div>`
-          : `<form class="lp-upload-form" data-task-id="${t.id}"><label class="login-field">${submitted ? "Upload revised lesson plan (PDF only, max 8 MB)" : "Upload lesson plan (PDF only, max 8 MB)"}<input type="file" name="file" accept="application/pdf,.pdf" required></label><button class="button button-primary" type="submit">${submitted ? "Upload revised lesson plan" : "Submit daily lesson plan"}</button>${submitted ? `<p>Status: <strong>For Revision</strong></p>${t.admin_revision_file_name ? `<p><a class="action-link" href="/api/lesson-plans/uploads/${t.upload_id}/revision-file" target="_blank" rel="noopener">Download administrator's revision instructions: ${escapeHtml(t.admin_revision_file_name)}</a></p>` : `<p>Check with the administrator for revision instructions.</p>`}<small>Upload a revised PDF to return it to the administrator for review. Earlier versions remain in revision history.</small>` : `<p>Status: <strong>${escapeHtml(t.status)}</strong></p>`}</form>`);
-    return `<article class="calendar-day ${dayTone}"><div class="content-card-heading"><h4>Day ${t.day_number}</h4><span class="deadline-chip">Due ${formatDate(t.due_date)}</span></div>${admin?`<small>Teacher: ${escapeHtml(t.teacher_name)}</small>`:""}${controls}</article>`;
-  }).join("")}</div></section>`).join("") : emptyFeed(admin ? "No calendar entries for this term and selection." : "No lesson-plan calendar assigned to you for this term yet.");
-  if(admin) host.innerHTML=weekMarkup;
-  else {
-    const bySubject=new Map();
-    for(const group of grouped.values()){ if(!bySubject.has(group.subject)) bySubject.set(group.subject,[]); bySubject.get(group.subject).push(group); }
-    host.innerHTML=bySubject.size ? [...bySubject.entries()].map(([subject,weeks])=>`<details class="lp-teacher-subject"><summary><span>${escapeHtml(subject)}</span><small>${weeks.reduce((n,w)=>n+w.tasks.length,0)} daily tasks · ${weeks.length} weeks</small></summary><div class="lp-teacher-weeks">${weeks.map(w=>`<details class="lp-teacher-week"><summary>Week ${w.week}<small>${w.tasks.filter(t=>!!t.upload_id).length}/${w.tasks.length} submitted</small></summary><section class="calendar-week"><div class="calendar-days">${w.tasks.map(t=>{ const submitted=!!t.upload_id; const state=String(t.status||"").toLowerCase(); const late=["late","overdue"].includes(state); const dayTone=state==="completed"&&!!t.submitted_late?"calendar-day-completed-late":state==="completed"?"calendar-day-completed":late?"calendar-day-late":"";let action="";if(!submitted||state==="for revision"){action=`<form class="lp-upload-form" data-task-id="${t.id}"><label class="login-field">${submitted?"Upload revised lesson plan (PDF only, max 8 MB)":"Upload lesson plan (PDF only, max 8 MB)"}<input type="file" name="file" accept="application/pdf,.pdf" required></label><button class="button button-primary" type="submit">${submitted?"Upload revised lesson plan":"Submit daily lesson plan"}</button>${state==="for revision"?(t.admin_revision_file_name?`<p><a class="action-link" href="/api/lesson-plans/uploads/${t.upload_id}/revision-file" target="_blank" rel="noopener">Download revision instructions PDF: ${escapeHtml(t.admin_revision_file_name)}</a></p>`:`<p>Check with the administrator for revision instructions.</p>`):""}</form>`;}else if(state==="approved"){action=`<button class="button button-primary lp-confirm-approval" data-upload-id="${t.upload_id}" type="button">Confirm approval and complete</button>`;}else if(state==="completed"){action=`<p><strong>Completed</strong> · Approval confirmed.</p>`;}else{action=`<button class="button" type="button" disabled>Under review</button>`;}return `<article class="calendar-day ${dayTone}"><div class="content-card-heading"><h4>Day ${t.day_number}</h4><span class="deadline-chip">Due ${formatDate(t.due_date)}</span></div><p>Status: <strong>${escapeHtml(t.status)}</strong>${t.admin_feedback?` · ${escapeHtml(t.admin_feedback)}`:""}</p>${submitted?`<small>Submitted: ${formatDate(t.submitted_at)}</small>`:""}${action}</article>`; }).join("")}</div></section></details>`).join("")}</div></details>`).join("") : emptyFeed("No lesson-plan calendar assigned to you for this term yet.");
+  if(lpOpenDay && document.querySelector("#lp-day-dialog").open) renderLpDialog();
+}
+
+/* ---------- Lesson plans: day pop-up ---------- */
+function lpTaskControls(t, admin){
+  const submitted=!!t.upload_id;
+  const state=String(t.status||"").toLowerCase();
+  const revisionLink=t.admin_revision_file_name?`<a class="action-link" href="/api/lesson-plans/uploads/${t.upload_id}/revision-file" target="_blank" rel="noopener">Revision instructions PDF: ${escapeHtml(t.admin_revision_file_name)}</a>`:"";
+  const feedback=t.admin_feedback?`<p class="lp-feedback">${escapeHtml(t.admin_feedback)}</p>`:"";
+  const history=Number(t.revision_count)>0?`<details><summary>View previous revisions (${t.revision_count})</summary><div class="lp-history" data-history-task="${t.id}">Loading revision history…</div></details>`:"";
+  const subInfo=submitted?`<p class="lp-meta">Submitted ${formatDate(t.submitted_at)}${t.submitted_late?" · after the due date":""}${Number(t.revision_count)>0?` · ${t.revision_count} earlier revision(s)`:""}</p>`:"";
+  if(admin){
+    if(!submitted) return `<p class="lp-note">${state==="overdue"?"This lesson plan is overdue. The teacher has not uploaded it yet.":"Waiting for the teacher to upload."}</p>`;
+    const review=["submitted","late"].includes(state)
+      ? `<form class="lp-review-form" data-upload-id="${t.upload_id}"><label class="login-field">Decision<select name="status"><option>Approved</option><option>For Revision</option></select></label><label class="login-field lp-revision-file-field" hidden>Upload revision instructions (PDF only, max 8 MB)<input name="revisionFile" type="file" accept="application/pdf,.pdf"></label><button class="button button-primary" type="submit">Save review decision</button></form>`
+      : `<p class="lp-note">${state==="approved"?"Approved — waiting for the teacher to confirm.":state==="completed"?"Completed and confirmed by the teacher.":state==="for revision"?"Revision requested — waiting for the teacher's new upload.":"This submission is not awaiting review."}</p>`;
+    return `<a class="action-link lp-pdf-link" href="/api/lesson-plans/uploads/${t.upload_id}/file" target="_blank" rel="noopener">Open PDF: ${escapeHtml(t.file_name)}</a>${revisionLink?`<p>${revisionLink}</p>`:""}${feedback}${subInfo}${review}${history}`;
   }
-  host.querySelectorAll("details[data-history-task], details").forEach(details=>{
-    const wrap=details.querySelector("[data-history-task]"); if(!wrap || wrap.dataset.loaded) return;
-    wrap.dataset.loaded="1";
+  if(submitted && state!=="for revision"){
+    const action=state==="approved"?`<p class="lp-note">The administrator approved this lesson plan. Confirm to mark it completed.</p><button class="button button-primary lp-confirm-approval" data-upload-id="${t.upload_id}" type="button">Confirm approval and complete</button>`
+      :state==="completed"?`<p class="lp-note">Completed. Your approval has been confirmed.</p>`
+      :`<p class="lp-note">Under review — locked until the administrator approves it or requests a revision.</p>`;
+    return `${feedback}${subInfo}${action}${history}`;
+  }
+  const rev=state==="for revision"?(revisionLink?`<p>Download ${revisionLink}</p>`:`<p class="lp-note">Check with the administrator for revision instructions.</p>`):"";
+  return `${feedback}${rev}<form class="lp-upload-form" data-task-id="${t.id}"><label class="login-field">${submitted?"Upload revised lesson plan":"Upload lesson plan"} (PDF only, max 8 MB)<input type="file" name="file" accept="application/pdf,.pdf" required></label><button class="button button-primary" type="submit">${submitted?"Upload revised lesson plan":"Submit daily lesson plan"}</button></form>${history}`;
+}
+function renderLpDialog(){
+  if(!lpOpenDay) return;
+  const admin=isLpAdmin();
+  const source=admin?lpAdminVisibleTasks():lessonPlanTasks.filter(t=>t.subject_id===lpTeacherSubjectId);
+  const list=source.filter(t=>lpDay(t)===lpOpenDay.date);
+  const dlg=document.querySelector("#lp-day-dialog");
+  if(!list.length){ dlg.close(); return; }
+  document.querySelector("#lp-day-kicker").textContent=`Term ${list[0].term_number} · ${list[0].subject_name}`;
+  document.querySelector("#lp-day-title").textContent=lpDateLabel(lpOpenDay.date);
+  document.querySelector("#lp-day-body").innerHTML=list.map(t=>{
+    const i=lpInfo(t);
+    return `<article class="lp-day-card lp-${i.tone}"><div class="lp-day-card-head"><div><strong>Week ${t.week_number} · Day ${t.day_number}</strong>${admin?`<small>${escapeHtml(t.teacher_name)}</small>`:""}</div>${lpChip(t)}</div><div class="lp-day-card-body">${lpTaskControls(t,admin)}</div></article>`;
+  }).join("");
+  lpLoadHistory(document.querySelector("#lp-day-body"));
+}
+function lpLoadHistory(root){
+  root.querySelectorAll("[data-history-task]").forEach(wrap=>{
+    if(wrap.dataset.loaded) return; wrap.dataset.loaded="1";
     api(`/api/lesson-plans/tasks/${wrap.dataset.historyTask}/history`).then(result=>{
       wrap.innerHTML=result.versions.length ? result.versions.map(v=>`<p><a class="action-link" href="/api/lesson-plans/versions/${v.id}/file" target="_blank" rel="noopener">Revision ${v.version_number}: ${escapeHtml(v.file_name)}</a> · ${escapeHtml(v.status)} · ${formatDate(v.submitted_at)}${v.admin_feedback?`<br>Feedback: ${escapeHtml(v.admin_feedback)}`:""}</p>`).join("") : "No previous revisions.";
-    }).catch(e=>{wrap.textContent=e.message;});
+    }).catch(()=>{wrap.textContent="Revision history could not be loaded.";});
   });
 }
+function openLpDay(scope,date){
+  lpOpenDay={scope,date}; const dlg=document.querySelector("#lp-day-dialog");
+  renderLpDialog(); if(lpOpenDay && !dlg.open) dlg.showModal();
+}
+
 function renderLessonPlanDashboard() {
   const statsHost=document.querySelector("#lp-dashboard-stats");
   if(!statsHost) return;
+  const term=lpTerm();
   const total=lessonPlanTasks.length;
   const submitted=lessonPlanTasks.filter(t=>!!t.upload_id).length;
   const approved=lessonPlanTasks.filter(t=>["approved","completed"].includes(String(t.status||"").toLowerCase())).length;
@@ -336,24 +456,29 @@ function renderLessonPlanDashboard() {
     {label:"Awaiting upload",value:pending,tone:"amber"}
   ];
   statsHost.innerHTML=cards.map(c=>`<div class="stat-card overview-stat" data-tone="${c.tone}"><span class="stat-label"><i class="stat-marker"></i>${c.label}</span><span class="stat-value">${c.value}</span></div>`).join("");
+  const tones={overdue:0,done:0,"done-late":0};
+  lessonPlanTasks.forEach(t=>{const k=lpInfo(t).tone; if(k in tones) tones[k]++;});
+  const sum=document.querySelector("#lp-status-summary");
+  sum.hidden=!term;
+  sum.innerHTML=`<span class="lp-sum lp-overdue"><i class="lp-dot lp-overdue"></i><b>${tones.overdue}</b> Overdue</span><span class="lp-sum lp-done"><i class="lp-dot lp-done"></i><b>${tones.done}</b> Completed on time</span><span class="lp-sum lp-done-late"><i class="lp-dot lp-done-late"></i><b>${tones["done-late"]}</b> Completed late</span>`;
   const admin=isLpAdmin();
-  document.querySelector("#lp-progress-panel").hidden=!admin;
-  document.querySelector("#lp-teacher-progress-panel").hidden=!admin;
   if(!admin) return;
   const group=(key)=>{
     const map=new Map();
     lessonPlanTasks.forEach(t=>{
       const name=t[key]||"Unassigned";
-      if(!map.has(name)) map.set(name,{name,teachers:new Set(),subjects:new Set(),total:0,submitted:0,approved:0});
-      const g=map.get(name); g.total++; if(t.teacher_name)g.teachers.add(t.teacher_name); if(t.subject_name)g.subjects.add(t.subject_name); if(t.upload_id)g.submitted++; if(["approved","completed"].includes(String(t.status||"").toLowerCase()))g.approved++;
+      if(!map.has(name)) map.set(name,{name,teachers:new Set(),subjects:new Set(),total:0,submitted:0,approved:0,overdue:0});
+      const g=map.get(name); g.total++; if(t.teacher_name)g.teachers.add(t.teacher_name); if(t.subject_name)g.subjects.add(t.subject_name); if(t.upload_id)g.submitted++; if(["approved","completed"].includes(String(t.status||"").toLowerCase()))g.approved++; if(lpInfo(t).tone==="overdue")g.overdue++;
     });
     return [...map.values()];
   };
   const pct=(g)=>g.total?Math.round(g.submitted/g.total*100):0;
-  const subjectRows=group("subject_name").map(g=>`<tr class="lp-subject-row" data-lp-subject="${escapeHtml(g.name)}" tabindex="0" role="button" aria-label="Open lesson plans for ${escapeHtml(g.name)}"><td><button type="button" class="action-link" data-lp-open-subject="${escapeHtml(g.name)}">${escapeHtml(g.name)} · View plans</button></td><td>${escapeHtml([...g.teachers].join(", ")||"—")}</td><td>${g.total}</td><td>${g.submitted}</td><td>${g.approved}</td><td>${pct(g)}%</td></tr>`).join("");
-  document.querySelector("#lp-subject-progress").innerHTML=subjectRows||'<tr><td colspan="6">No tasks generated for this term yet.</td></tr>';
-  const teacherRows=group("teacher_name").map(g=>`<tr><td><button type="button" class="action-link" data-lp-open-teacher="${escapeHtml(g.name)}">${escapeHtml(g.name)} · View plans</button></td><td>${escapeHtml([...g.subjects].join(", ")||"—")}</td><td>${g.total}</td><td>${g.submitted}</td><td>${g.approved}</td><td>${pct(g)}%</td></tr>`).join("");
-  document.querySelector("#lp-teacher-progress").innerHTML=teacherRows||'<tr><td colspan="6">No teacher tasks generated for this term yet.</td></tr>';
+  const od=g=>g.overdue?`<span class="lp-chip lp-overdue">${g.overdue} overdue</span>`:`<span class="lp-muted">0</span>`;
+  const bar=g=>`<div class="lp-progress-cell"><div class="lp-bar"><i style="width:${pct(g)}%"></i></div><span>${pct(g)}%</span></div>`;
+  const subjectRows=group("subject_name").map(g=>`<tr class="lp-subject-row${g.overdue?" lp-row-overdue":""}" data-lp-subject="${escapeHtml(g.name)}" tabindex="0" role="button" aria-label="Open lesson plans for ${escapeHtml(g.name)}"><td><button type="button" class="action-link" data-lp-open-subject="${escapeHtml(g.name)}">${escapeHtml(g.name)} · View plans</button></td><td>${escapeHtml([...g.teachers].join(", ")||"—")}</td><td>${g.total}</td><td>${g.submitted}</td><td>${g.approved}</td><td>${od(g)}</td><td>${bar(g)}</td></tr>`).join("");
+  document.querySelector("#lp-subject-progress").innerHTML=subjectRows||'<tr><td colspan="7">No tasks generated for this term yet.</td></tr>';
+  const teacherRows=group("teacher_name").map(g=>`<tr class="${g.overdue?"lp-row-overdue":""}"><td><button type="button" class="action-link" data-lp-open-teacher="${escapeHtml(g.name)}">${escapeHtml(g.name)} · View plans</button></td><td>${escapeHtml([...g.subjects].join(", ")||"—")}</td><td>${g.total}</td><td>${g.submitted}</td><td>${g.approved}</td><td>${od(g)}</td><td>${bar(g)}</td></tr>`).join("");
+  document.querySelector("#lp-teacher-progress").innerHTML=teacherRows||'<tr><td colspan="7">No teacher tasks generated for this term yet.</td></tr>';
 }
 
 async function refreshLessonPlans() {
@@ -380,15 +505,13 @@ async function refreshLessonPlans() {
     teacherSelect.disabled=teachers.length===0;
     document.querySelector("#lp-start-date").value ||= new Date().toISOString().slice(0,10);
     document.querySelector("#lp-assignment-list").innerHTML=lessonPlanAssignments.length ? lessonPlanAssignments.map(a=>`<article class="content-card lp-assignment-card"><div class="content-card-heading"><div><h3>${escapeHtml(a.teacher_name)} · ${escapeHtml(a.subject_name)}</h3><small>Teacher–subject assignment</small></div><div class="row-actions"><button type="button" class="button button-secondary" data-lp-edit="${a.id}">Edit</button><button type="button" class="action-link danger-link" data-lp-remove="${a.id}">Delete</button><button type="button" class="action-link" data-lp-assignment-open="${a.teacher_id}|${a.subject_id}|${escapeHtml(a.subject_name)}">View plans</button></div></div><form class="lp-assignment-edit" data-lp-edit-form="${a.id}" hidden><label class="login-field">Teacher<select name="teacherId" required>${teachers.map(u=>`<option value="${u.id}" ${String(u.id)===String(a.teacher_id)?"selected":""}>${escapeHtml(u.displayName)}</option>`).join("")}</select></label><label class="login-field">Subject name<input name="subjectName" maxlength="160" required value="${escapeHtml(a.subject_name)}"></label><div class="form-actions"><button class="button button-primary" type="submit">Save changes</button><button class="button button-secondary" type="button" data-lp-cancel-edit="${a.id}">Cancel</button></div><small>Changing the teacher or subject updates this assignment and its generated tasks. Uploaded files and revision history are retained.</small></form></article>`).join("") : emptyFeed("No teacher-subject assignments yet.");
-    if (!isLpAdmin()) renderLessonPlanTasks();
-    else if (selectedLpSubject) renderLessonPlanTasks();
-    else { document.querySelector("#lesson-plan-task-panel").hidden=true; document.querySelector("#lesson-plan-task-list").innerHTML=""; }
-    renderLessonPlanDashboard();
     const termSelected=!!term;
+    renderLessonPlanDashboard();
+    renderLessonPlanTasks();
+    document.querySelector("#lp-term-prompt").hidden=termSelected;
     document.querySelector("#lp-dashboard-stats").hidden=!termSelected;
     document.querySelector("#lp-progress-panel").hidden=!isLpAdmin() || !termSelected;
     document.querySelector("#lp-teacher-progress-panel").hidden=!isLpAdmin() || !termSelected;
-    if(!termSelected){document.querySelector("#lesson-plan-task-panel").hidden=true;document.querySelector("#lesson-plan-task-list").innerHTML="";}
   } catch(error) { setGlobalError(error.message); }
 }
 
@@ -399,11 +522,23 @@ async function refreshLpNotifications() {
   try {
     const results=await Promise.all([1,2,3].map(term=>api(`/api/lesson-plans/tasks?term=${term}`)));
     const all=results.flatMap(r=>r.tasks||[]);
-    const items=currentUser.role==="teacher" ? all.filter(t=>!t.upload_id || t.status==="For Revision" || t.status==="Approved") : all.filter(t=>!!t.upload_id && ["Submitted","Late","For Revision"].includes(t.status));
+    const teacher=currentUser.role==="teacher";
+    const overdue=all.filter(t=>lpInfo(t).tone==="overdue");
+    const others=teacher ? all.filter(t=>lpInfo(t).tone!=="overdue" && (t.status==="For Revision" || t.status==="Approved"))
+                         : all.filter(t=>!!t.upload_id && ["Submitted","Late"].includes(t.status));
+    const items=[...overdue,...others];
     panel.hidden=items.length===0;
-    const late=items.filter(t=>String(t.status).toLowerCase()==="late" || String(t.status).toLowerCase()==="overdue").length;
-    document.querySelector("#lp-notification-summary").textContent=currentUser.role==="teacher" ? `${items.length} lesson-plan action(s) need your attention${late?`; ${late} overdue`:""}.` : `${items.length} lesson-plan submission(s) waiting for administrator review.`;
-    document.querySelector("#lp-notification-list").innerHTML=items.slice(0,8).map(t=>feedItem(`${t.subject_name} · Term ${t.term_number}, Week ${t.week_number}, Day ${t.day_number}`, `${currentUser.role==="teacher"?(t.status==="Approved"?"Confirm administrator approval":"Submit or revise the daily lesson plan as PDF"):"Review teacher submission"}. Due ${String(t.due_date).slice(0,10)}${t.status?` · ${t.status}`:""}`, currentUser.role==="teacher"?"Daily submission required":t.teacher_name)).join("");
+    panel.classList.toggle("lp-has-overdue",overdue.length>0);
+    const parts=[];
+    if(overdue.length) parts.push(`<strong class="lp-text-overdue">${overdue.length} overdue</strong>`);
+    parts.push(teacher?`${others.length} awaiting your action`:`${others.length} waiting for your review`);
+    document.querySelector("#lp-notification-summary").innerHTML=parts.join(" · ");
+    document.querySelector("#lp-notification-list").innerHTML=items.slice(0,10).map(t=>{
+      const i=lpInfo(t);
+      const what=i.tone==="overdue" ? (teacher?"Upload your lesson plan now — it is past its due date":"Teacher has not uploaded this lesson plan")
+        : teacher ? (t.status==="Approved"?"Confirm administrator approval":"Revise and re-upload the PDF") : "Review teacher submission";
+      return `<article class="feed-item lp-feed lp-${i.tone}"><div class="lp-feed-top"><h3>${escapeHtml(t.subject_name)} · Term ${t.term_number}, Week ${t.week_number}, Day ${t.day_number}</h3><span class="lp-chip lp-${i.tone}">${i.label}</span></div><p>${escapeHtml(what)}. Due ${escapeHtml(lpDateLabel(lpDay(t),{month:"short",day:"numeric",year:"numeric"}))}</p><small>${escapeHtml(teacher?"Daily submission":t.teacher_name)}</small></article>`;
+    }).join("") + (items.length>10?`<p class="lp-more">+ ${items.length-10} more in Lesson Plans</p>`:"");
   } catch(error) { /* Dashboard notification is supplementary; page-level errors are shown by the main workspace. */ }
 }
 
@@ -758,13 +893,26 @@ document.querySelector("#lp-generate-form").addEventListener("submit", async (ev
   try {
     const result=await api("/api/lesson-plans/generate",{method:"POST",body:{termNumber,teacherId,subjectName,weeks,daysPerWeek,startDate}});
     document.querySelector("#lp-view-term").value=String(termNumber);
-    selectedLpSubject=subjectName;
-    document.querySelector("#lp-subject").value="";
+    selectedLpSubject=subjectName; selectedLpTeacherId=null; selectedLpSubjectId=null;
+    document.querySelector("#lp-task-detail-heading").textContent=`${subjectName} · Term ${termNumber}`;
+    document.querySelector("#lp-subject").value=""; setLpTab("progress");
     await refreshLessonPlans(); await refreshLpNotifications();
     showToast(`Term ${termNumber}: created/updated ${result.generatedOrUpdated} daily lesson-plan tasks.`);
   } catch(e){setGlobalError(e.message);}
 });
-document.querySelector("#lp-view-term").addEventListener("change",()=>{selectedLpSubject=null; refreshLessonPlans();});
+document.querySelector("#lp-view-term").addEventListener("change",()=>{selectedLpSubject=null;selectedLpTeacherId=null;selectedLpSubjectId=null;lpTeacherSubjectId=null;lpCal.teacher.key="";lpCal.admin.key="";document.querySelector("#lp-day-dialog").open&&document.querySelector("#lp-day-dialog").close(); refreshLessonPlans();});
+document.querySelector("#lp-tabs").addEventListener("click",(event)=>{const b=event.target.closest("[data-lp-tab]");if(b)setLpTab(b.dataset.lpTab);});
+document.querySelector("#lp-day-close").addEventListener("click",()=>document.querySelector("#lp-day-dialog").close());
+document.querySelector("#lp-day-dialog").addEventListener("click",(event)=>{if(event.target===event.currentTarget)event.currentTarget.close();});
+document.querySelector("#lp-day-dialog").addEventListener("close",()=>{lpOpenDay=null;});
+document.querySelector("#view-lesson-plans").addEventListener("click",(event)=>{
+  const day=event.target.closest("[data-lp-day]");
+  if(day){openLpDay(day.dataset.lpScope,day.dataset.lpDay);return;}
+  const nav=event.target.closest("[data-lp-cal-nav]");
+  if(nav){const st=lpCal[nav.dataset.lpScope];const [y,m]=st.month.split("-").map(Number);const d=new Date(y,m-1+Number(nav.dataset.lpCalNav),1);st.month=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;renderLessonPlanTasks();return;}
+  const pill=event.target.closest("[data-lp-subject-pill]");
+  if(pill){lpTeacherSubjectId=Number(pill.dataset.lpSubjectPill);renderLessonPlanTasks();}
+});
 document.querySelector("#lp-subject-progress").addEventListener("click",(event)=>{
   const trigger=event.target.closest("[data-lp-open-subject]");
   const row=event.target.closest("[data-lp-subject]");
@@ -787,7 +935,7 @@ document.querySelector("#lp-assignment-list").addEventListener("click",async(eve
   const edit=event.target.closest("[data-lp-edit]");
   if(edit){const form=document.querySelector(`[data-lp-edit-form="${edit.dataset.lpEdit}"]`);if(form)form.hidden=!form.hidden;return;}
   const cancel=event.target.closest("[data-lp-cancel-edit]");if(cancel){const form=document.querySelector(`[data-lp-edit-form="${cancel.dataset.lpCancelEdit}"]`);if(form)form.hidden=true;return;}
-  const open=event.target.closest("[data-lp-assignment-open]");if(open){const [teacherId,subjectId,subject]=open.dataset.lpAssignmentOpen.split("|");selectedLpSubject=subject;selectedLpTeacherId=teacherId;selectedLpSubjectId=subjectId;document.querySelector("#lp-task-detail-heading").textContent=`${subject} · Term ${document.querySelector("#lp-view-term").value}`;document.querySelector("#lesson-plan-task-panel").hidden=false;renderLessonPlanTasks();document.querySelector("#lesson-plan-task-panel").scrollIntoView({behavior:"smooth",block:"start"});return;}
+  const open=event.target.closest("[data-lp-assignment-open]");if(open){const [teacherId,subjectId,subject]=open.dataset.lpAssignmentOpen.split("|");selectedLpSubject=subject;selectedLpTeacherId=teacherId;selectedLpSubjectId=subjectId;setLpTab("progress");if(!lpTerm())setGlobalError("Choose a term first to view lesson plans.");document.querySelector("#lp-task-detail-heading").textContent=`${subject} · Term ${document.querySelector("#lp-view-term").value}`;document.querySelector("#lesson-plan-task-panel").hidden=false;renderLessonPlanTasks();document.querySelector("#lesson-plan-task-panel").scrollIntoView({behavior:"smooth",block:"start"});return;}
   const remove=event.target.closest("[data-lp-remove]");if(remove){if(!confirm("Delete this teacher–subject assignment and remove all its generated lesson-plan tasks across every term? Uploaded PDFs and revision history attached to those tasks will also be permanently deleted."))return;try{await api(`/api/lesson-plans/assignments/${remove.dataset.lpRemove}`,{method:"DELETE"});await refreshLessonPlans();showToast("Assignment deleted.");}catch(e){setGlobalError(e.message);} }
 });
 document.querySelector("#lp-assignment-list").addEventListener("submit",async(event)=>{const form=event.target.closest("[data-lp-edit-form]");if(!form)return;event.preventDefault();const data=new FormData(form);try{await api(`/api/lesson-plans/assignments/${form.dataset.lpEdit}`,{method:"PUT",body:{teacherId:Number(data.get("teacherId")),subjectName:String(data.get("subjectName")).trim()}});await refreshLessonPlans();showToast("Teacher–subject assignment updated.");}catch(e){setGlobalError(e.message);}});

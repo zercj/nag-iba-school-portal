@@ -403,3 +403,139 @@ h1, h2 { font-family: Manrope, "Segoe UI", sans-serif; }
 .calendar-day-completed-late { border-color: #d6b84b; background: color-mix(in srgb, #facc15 12%, transparent); }
 .calendar-day-late { border-color: #d97706; background: color-mix(in srgb, #f59e0b 7%, transparent); }
 .lp-revision-file-field[hidden] { display: none !important; }
+
+/* ===== Lesson plans: redesigned interface ===== */
+:root {
+  --lp-red:#c62828; --lp-red-bg:#fdecec; --lp-red-line:#e57373;
+  --lp-green:#1f7a4d; --lp-green-bg:#e6f5ec; --lp-green-line:#5dbb85;
+  --lp-yellow:#7a6410; --lp-yellow-bg:#fff7cc; --lp-yellow-line:#ead46b;
+  --lp-blue:#2f4fa8; --lp-blue-bg:#edf2ff; --lp-blue-line:#b8c7f2;
+  --lp-violet:#6b3fa0; --lp-violet-bg:#f4eefb; --lp-violet-line:#d2bdea;
+}
+.lp-pane-off { display: none !important; }
+.lp-muted { color: var(--muted); }
+
+/* tabs */
+.lp-tabs { display: flex; gap: 4px; margin: 0 0 16px; padding: 4px; border: 1px solid var(--line); border-radius: 10px; background: #fff; width: fit-content; max-width: 100%; overflow-x: auto; }
+.lp-tabs[hidden] { display: none; }
+.lp-tab { height: 34px; padding: 0 18px; border: 0; border-radius: 7px; background: transparent; color: #55657d; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.lp-tab:hover { background: #f1f5fb; }
+.lp-tab.is-active { background: #1748e8; color: #fff; }
+.lp-term-prompt { margin-bottom: 14px; padding: 14px 16px; border: 1px dashed #b8c7f2; border-radius: 9px; background: #f5f8ff; color: #3c5da3; font-size: 12px; }
+.lp-term-prompt[hidden] { display: none; }
+#lp-assignments-panel, #lesson-plan-admin-panel { margin-bottom: 16px; }
+.lp-status-summary { display: flex; flex-wrap: wrap; gap: 8px; margin: -3px 0 16px; }
+.lp-status-summary[hidden] { display: none; }
+.lp-sum { display: inline-flex; align-items: center; gap: 7px; padding: 7px 12px; border: 1px solid; border-radius: 999px; font-size: 11px; font-weight: 600; }
+.lp-sum b { font-size: 13px; }
+
+/* status palette — overdue red, on-time green, late light yellow */
+.lp-overdue { --t-fg:var(--lp-red); --t-bg:var(--lp-red-bg); --t-line:var(--lp-red-line); }
+.lp-done { --t-fg:var(--lp-green); --t-bg:var(--lp-green-bg); --t-line:var(--lp-green-line); }
+.lp-done-late { --t-fg:var(--lp-yellow); --t-bg:var(--lp-yellow-bg); --t-line:var(--lp-yellow-line); }
+.lp-review { --t-fg:var(--lp-blue); --t-bg:var(--lp-blue-bg); --t-line:var(--lp-blue-line); }
+.lp-revision { --t-fg:var(--lp-violet); --t-bg:var(--lp-violet-bg); --t-line:var(--lp-violet-line); }
+.lp-pending { --t-fg:#6f7e91; --t-bg:#fff; --t-line:#e3e8ef; }
+.lp-sum, .lp-chip { color: var(--t-fg); background: var(--t-bg); border-color: var(--t-line); }
+.lp-chip { display: inline-flex; align-items: center; padding: 3px 9px; border: 1px solid; border-radius: 999px; font-size: 10px; font-weight: 700; white-space: nowrap; }
+.lp-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--t-line); border: 1.5px solid var(--t-fg); }
+.lp-dot.lp-overdue { background: var(--lp-red); border-color: var(--lp-red); }
+.lp-dot.lp-done { background: var(--lp-green); border-color: var(--lp-green); }
+.lp-dot.lp-done-late { background: #f6dc5c; border-color: #cdb23a; }
+.lp-text-overdue { color: var(--lp-red); }
+
+/* progress tables */
+.lp-table td, .lp-table th { vertical-align: middle; }
+.lp-row-overdue td:first-child { box-shadow: inset 3px 0 0 var(--lp-red); }
+.lp-row-overdue { background: #fff8f8; }
+.lp-bar { height: 7px; border-radius: 99px; background: #e8edf5; overflow: hidden; min-width: 70px; flex: 1; }
+.lp-bar i { display: block; height: 100%; border-radius: inherit; background: #28988c; }
+.lp-progress-cell { display: flex; align-items: center; gap: 8px; min-width: 120px; font-size: 11px; font-weight: 600; color: #506078; }
+
+/* teacher subject pills */
+.lp-cal-panel { padding: 16px; margin-top: 4px; }
+.lp-subject-pills { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+.lp-subject-pill { display: inline-flex; align-items: center; gap: 8px; height: 38px; padding: 0 16px; border: 1px solid #dbe3ef; border-radius: 999px; background: #fff; color: #40516a; font-size: 12px; font-weight: 600; }
+.lp-subject-pill:hover { border-color: #9db4ee; }
+.lp-subject-pill.is-active { border-color: #1748e8; background: #1748e8; color: #fff; }
+.lp-pill-alert { display: inline-grid; place-items: center; min-width: 19px; height: 19px; padding: 0 5px; border-radius: 99px; background: var(--lp-red); color: #fff; font-size: 10px; font-weight: 700; }
+
+/* calendar */
+.lp-cal-host { margin-top: 4px; }
+#lesson-plan-task-list.lp-cal-host { padding: 0 16px 16px; }
+.lp-cal-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.lp-cal-nav { display: flex; align-items: center; gap: 10px; }
+.lp-cal-nav h3 { margin: 0; min-width: 150px; text-align: center; color: #17326e; font-size: 16px; font-weight: 700; }
+.lp-nav-btn { width: 34px; height: 34px; border: 1px solid #dbe3ef; border-radius: 8px; background: #fff; color: #17326e; font-size: 20px; line-height: 1; }
+.lp-nav-btn:hover:not(:disabled) { background: #f1f5fb; }
+.lp-nav-btn:disabled { opacity: .35; cursor: default; }
+.lp-cal-progress { display: flex; align-items: center; gap: 10px; min-width: 190px; font-size: 11px; font-weight: 600; color: #506078; }
+.lp-cal-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; }
+.lp-cal-dow { padding: 4px 0; text-align: center; color: #8794a5; font-size: 10px; font-weight: 700; letter-spacing: .6px; text-transform: uppercase; }
+.lp-cal-cell { position: relative; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; min-height: 84px; padding: 8px 9px; border: 1px solid #eef1f5; border-radius: 9px; background: #fafbfd; text-align: left; min-width: 0; }
+.lp-cal-empty { border-color: transparent; background: transparent; }
+.lp-cal-none .lp-cal-num { color: #b3bdca; }
+.lp-cal-num { font-size: 14px; font-weight: 700; color: #34475f; }
+.lp-cal-wk { font-size: 10px; color: var(--t-fg, #78869a); opacity: .85; }
+.lp-cal-status { margin-top: auto; font-size: 10px; font-weight: 700; color: var(--t-fg); }
+.lp-cal-task { border-color: var(--t-line); background: var(--t-bg); cursor: pointer; transition: transform .12s, box-shadow .12s; }
+.lp-cal-task .lp-cal-num { color: var(--t-fg); }
+.lp-cal-task:hover { transform: translateY(-2px); box-shadow: 0 6px 16px #1c2d4514; }
+.lp-cal-task.lp-pending { background: #fff; border-color: #cfd8e5; }
+.lp-cal-task.lp-overdue { border-width: 1.5px; box-shadow: inset 0 3px 0 var(--lp-red); }
+.is-today { outline: 2px solid #1748e8; outline-offset: 1px; }
+.lp-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); font-size: 11px; color: #506078; }
+.lp-legend-item { display: inline-flex; align-items: center; gap: 6px; }
+.lp-legend-item b { color: #17326e; }
+.lp-dot.lp-review { background: var(--lp-blue-bg); border-color: var(--lp-blue); }
+.lp-dot.lp-revision { background: var(--lp-violet-bg); border-color: var(--lp-violet); }
+.lp-dot.lp-pending { background: #fff; border-color: #9aa8bb; }
+.lp-cal-hint { margin: 8px 0 0; color: #98a3b0; font-size: 11px; }
+
+/* day pop-up */
+.lp-dialog { width: min(560px, calc(100vw - 24px)); max-height: calc(100vh - 32px); padding: 0; border: 0; border-radius: 14px; background: #fff; color: #1a2944; box-shadow: 0 24px 70px #0f1e3a40; overflow: hidden; }
+.lp-dialog[open] { display: flex; flex-direction: column; }
+.lp-dialog::backdrop { background: #0f1e3a73; backdrop-filter: blur(2px); }
+.lp-dialog-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 18px 20px 14px; border-bottom: 1px solid var(--line); }
+.lp-dialog-head small { color: #1748e8; font-size: 11px; font-weight: 700; }
+.lp-dialog-head h3 { margin: 3px 0 0; font-size: 18px; color: #17326e; }
+.lp-dialog-close { width: 34px; height: 34px; border: 0; border-radius: 8px; background: #f1f5fb; color: #40516a; font-size: 22px; line-height: 1; flex: none; }
+.lp-dialog-close:hover { background: #e4ebf7; }
+.lp-dialog-body { display: grid; gap: 12px; padding: 16px 20px 20px; overflow-y: auto; }
+.lp-day-card { border: 1px solid var(--t-line); border-left-width: 4px; border-radius: 10px; background: color-mix(in srgb, var(--t-bg) 55%, #fff); }
+.lp-day-card.lp-pending { border-color: #dbe3ef; }
+.lp-day-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; padding: 12px 14px 0; }
+.lp-day-card-head strong { display: block; font-size: 13px; }
+.lp-day-card-head small { color: #78869a; font-size: 11px; }
+.lp-day-card-body { display: grid; gap: 10px; padding: 12px 14px 14px; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.lp-day-card-body p { margin: 0; }
+.lp-day-card-body .login-field { margin: 0; font-size: 11px; }
+.lp-day-card-body .login-field input, .lp-day-card-body .login-field select { height: 40px; font-size: 12px; padding-top: 8px; }
+.lp-day-card-body .lp-upload-form, .lp-day-card-body .lp-review-form { display: grid; gap: 10px; }
+.lp-day-card-body .button { height: 40px; font-size: 12px; }
+.lp-note, .lp-meta { color: #6f7e91; font-size: 12px; }
+.lp-meta { font-size: 11px; }
+.lp-feedback { padding: 8px 10px; border-radius: 7px; background: #fff; border: 1px solid #e8ecf2; }
+.lp-pdf-link { font-weight: 700; }
+.lp-day-card details summary { cursor: pointer; font-weight: 600; font-size: 12px; }
+
+/* dashboard notifications */
+.lp-feed { border-left: 3px solid var(--t-line); padding-left: 12px; margin: 8px 0; border-top: 0; border-radius: 4px; background: color-mix(in srgb, var(--t-bg) 60%, #fff); padding-right: 12px; }
+.lp-feed-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.lp-feed-top h3 { margin-bottom: 4px; }
+.lp-feed.lp-overdue { border-left-color: var(--lp-red); }
+.lp-feed.lp-overdue h3 { color: var(--lp-red); }
+#lp-dashboard-notifications.lp-has-overdue { border-color: var(--lp-red-line); }
+.lp-more { margin: 4px 0 12px; color: #78869a; font-size: 11px; }
+
+@media (max-width: 640px) {
+  .lp-cal-grid { gap: 3px; }
+  .lp-cal-cell { min-height: 58px; padding: 5px 6px; border-radius: 7px; }
+  .lp-cal-num { font-size: 12px; }
+  .lp-cal-wk, .lp-cal-status { font-size: 8px; }
+  .lp-cal-wk { display: none; }
+  .lp-cal-nav h3 { min-width: 0; font-size: 14px; }
+  .lp-cal-panel { padding: 12px; }
+  #lesson-plan-task-list.lp-cal-host { padding: 0 10px 12px; }
+  .lp-dialog { border-radius: 12px; }
+}
