@@ -162,6 +162,10 @@ CREATE TABLE IF NOT EXISTS lesson_plan_uploads (
   file_data BYTEA NOT NULL,
   status TEXT NOT NULL DEFAULT 'Submitted' CHECK(status IN ('Submitted','Late','Approved','For Revision','Completed')),
   admin_feedback TEXT NOT NULL DEFAULT '',
+  admin_revision_file_name TEXT NOT NULL DEFAULT '',
+  admin_revision_file_mime TEXT NOT NULL DEFAULT 'application/pdf',
+  admin_revision_file_size BIGINT NOT NULL DEFAULT 0,
+  admin_revision_file_data BYTEA,
   submitted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   reviewed_by BIGINT REFERENCES users(id) ON DELETE SET NULL,
   reviewed_at TIMESTAMPTZ,
@@ -181,6 +185,10 @@ CREATE TABLE IF NOT EXISTS lesson_plan_upload_versions (
   file_data BYTEA NOT NULL,
   status TEXT NOT NULL,
   admin_feedback TEXT NOT NULL DEFAULT '',
+  admin_revision_file_name TEXT NOT NULL DEFAULT '',
+  admin_revision_file_mime TEXT NOT NULL DEFAULT 'application/pdf',
+  admin_revision_file_size BIGINT NOT NULL DEFAULT 0,
+  admin_revision_file_data BYTEA,
   submitted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   version_number INTEGER NOT NULL DEFAULT 1
 );
@@ -193,3 +201,13 @@ DO $$ BEGIN
   END IF;
   ALTER TABLE lesson_plan_uploads ADD CONSTRAINT lesson_plan_uploads_status_check CHECK(status IN ('Submitted','Late','Approved','For Revision','Completed'));
 END $$;
+
+-- Revision instruction PDF attachment support (safe for existing deployments).
+ALTER TABLE lesson_plan_uploads ADD COLUMN IF NOT EXISTS admin_revision_file_name TEXT NOT NULL DEFAULT '';
+ALTER TABLE lesson_plan_uploads ADD COLUMN IF NOT EXISTS admin_revision_file_mime TEXT NOT NULL DEFAULT 'application/pdf';
+ALTER TABLE lesson_plan_uploads ADD COLUMN IF NOT EXISTS admin_revision_file_size BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE lesson_plan_uploads ADD COLUMN IF NOT EXISTS admin_revision_file_data BYTEA;
+ALTER TABLE lesson_plan_upload_versions ADD COLUMN IF NOT EXISTS admin_revision_file_name TEXT NOT NULL DEFAULT '';
+ALTER TABLE lesson_plan_upload_versions ADD COLUMN IF NOT EXISTS admin_revision_file_mime TEXT NOT NULL DEFAULT 'application/pdf';
+ALTER TABLE lesson_plan_upload_versions ADD COLUMN IF NOT EXISTS admin_revision_file_size BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE lesson_plan_upload_versions ADD COLUMN IF NOT EXISTS admin_revision_file_data BYTEA;

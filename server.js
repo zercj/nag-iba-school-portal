@@ -810,7 +810,8 @@ async function handleLessonPlanRoutes(request, response, url, actor) {
     const result = await pool.query(`SELECT t.id,t.term_number,t.week_number,t.day_number,t.due_date,t.teacher_id,t.subject_id,
       u.display_name AS teacher_name,s.name AS subject_name,x.id AS upload_id,x.file_name,x.file_size,
       CASE WHEN x.id IS NOT NULL THEN x.status WHEN t.due_date < CURRENT_DATE THEN 'Overdue' ELSE 'Awaiting Upload' END AS status,
-      x.admin_feedback,x.submitted_at,
+      x.admin_feedback,x.admin_revision_file_name,x.submitted_at,
+      (x.submitted_at::date > t.due_date) AS submitted_late,
       (SELECT COUNT(*)::int FROM lesson_plan_upload_versions v WHERE v.task_id=t.id) AS revision_count
       FROM lesson_plan_generated_tasks t JOIN users u ON u.id=t.teacher_id JOIN subjects s ON s.id=t.subject_id
       LEFT JOIN lesson_plan_uploads x ON x.task_id=t.id
@@ -839,7 +840,7 @@ async function handleLessonPlanRoutes(request, response, url, actor) {
     const conn = await pool.connect();
     try {
       await conn.query("BEGIN");
-      const current = await conn.query("SELECT id,task_id,teacher_id,file_name,mime_type,file_size,file_data,status,admin_feedback,submitted_at FROM lesson_plan_uploads WHERE task_id=$1 FOR UPDATE", [uploadMatch[1]]);
+      const current = await conn.query("SELECT id,task_id,teacher_id,file_name,mime_type,file_size,file_data,status,admin_feedback,admin_revision_file_name,admin_revision_file_mime,admin_revision_file_size,admin_revision_file_data,submitted_at FROM lesson_plan_uploads WHERE task_id=$1 FOR UPDATE", [uploadMatch[1]]);
       let version = 1;
       if (current.rowCount) {
         const priorStatus = String(current.rows[0].status || "").toLowerCase();
@@ -851,9 +852,9 @@ async function handleLessonPlanRoutes(request, response, url, actor) {
         const count = await conn.query("SELECT COALESCE(MAX(version_number),0)::int AS n FROM lesson_plan_upload_versions WHERE task_id=$1", [uploadMatch[1]]);
         version = count.rows[0].n + 1;
         const old = current.rows[0];
-        await conn.query(`INSERT INTO lesson_plan_upload_versions(task_id,teacher_id,file_name,mime_type,file_size,file_data,status,admin_feedback,submitted_at,version_number)
-          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, [old.task_id,old.teacher_id,old.file_name,old.mime_type,old.file_size,old.file_data,old.status,old.admin_feedback,old.submitted_at,version]);
-        await conn.query(`UPDATE lesson_plan_uploads SET file_name=$1,mime_type='application/pdf',file_size=$2,file_data=$3,status=$4,admin_feedback='',submitted_at=NOW(),reviewed_by=NULL,reviewed_at=NULL WHERE task_id=$5`, [fileName,data.length,data,status,uploadMatch[1]]);
+        await conn.query(`INSERT INTO lesson_plan_upload_versions(task_id,teacher_id,file_name,mime_type,file_size,file_data,status,admin_feedback,admin_revision_file_name,admin_revision_file_mime,admin_revision_file_size,admin_revision_file_data,submitted_at,version_number)
+          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`, [old.task_id,old.teacher_id,old.file_name,old.mime_type,old.file_size,old.file_data,old.status,old.admin_feedback,old.admin_revision_file_name,old.admin_revision_file_mime,old.admin_revision_file_size,old.admin_revision_file_data,old.submitted_at,version]);
+        await conn.query(`UPDATE lesson_plan_uploads SET file_name=$1,mime_type='application/pdf',file_size=$2,file_data=$3,status=$4,admin_feedback='',admin_revision_file_name='',admin_revision_file_size=0,admin_revision_file_data=NULL,submitted_at=NOW(),reviewed_by=NULL,reviewed_at=NULL WHERE task_id=$5`, [fileName,data.length,data,status,uploadMatch[1]]);
       } else {
         await conn.query(`INSERT INTO lesson_plan_uploads(task_id,teacher_id,file_name,mime_type,file_size,file_data,status,admin_feedback,submitted_at,reviewed_by,reviewed_at)
           VALUES($1,$2,$3,'application/pdf',$4,$5,$6,'',NOW(),NULL,NULL)`, [uploadMatch[1],actor.id,fileName,data.length,data,status]);
@@ -888,6 +889,16 @@ async function handleLessonPlanRoutes(request, response, url, actor) {
     response.writeHead(200,{"Content-Type":f.mime_type,"Content-Disposition":`attachment; filename*=UTF-8''${encodeURIComponent(f.file_name)}`,"Cache-Control":"no-store","X-Content-Type-Options":"nosniff"});
     response.end(f.file_data); return true;
   }
+  const revisionFileMatch = url.pathname.match(/^\/api\/lesson-plans\/uploads\/(\d+)\/revision-file$/);
+  if (revisionFileMatch && request.method === "GET") {
+    const result = await pool.query("SELECT x.teacher_id,x.admin_revision_file_name,x.admin_revision_file_mime,x.admin_revision_file_data FROM lesson_plan_uploads x WHERE x.id=$1", [revisionFileMatch[1]]);
+    if (!result.rowCount || !result.rows[0].admin_revision_file_data) throw new HttpError(404,"Revision PDF not found.");
+    if (!admin.includes(actor.role) && Number(result.rows[0].teacher_id)!==Number(actor.id)) throw new HttpError(403,"You cannot access this revision document.");
+    const f=result.rows[0];
+    response.writeHead(200,{"Content-Type":f.admin_revision_file_mime,"Content-Disposition":`attachment; filename*=UTF-8''${encodeURIComponent(f.admin_revision_file_name)}`,"Cache-Control":"no-store","X-Content-Type-Options":"nosniff"});
+    response.end(f.admin_revision_file_data); return true;
+  }
+
   const confirmMatch = url.pathname.match(/^\/api\/lesson-plans\/uploads\/(\d+)\/confirm$/);
   if (confirmMatch && request.method === "POST") {
     ensureSameOrigin(request); requireRole(actor, ["teacher"]);
@@ -905,12 +916,21 @@ async function handleLessonPlanRoutes(request, response, url, actor) {
     const body=await parseJson(request), status=body.status;
     if (!["Approved","For Revision"].includes(status)) throw new HttpError(400,"Choose Approved or For Revision.");
     const feedback=String(body.feedback||"").trim().slice(0,2000);
-    if (status === "For Revision" && !feedback) throw new HttpError(400,"Write feedback explaining what the teacher must revise.");
+    let revisionFileName="", revisionFileData=null;
+    if (status === "For Revision") {
+      if (!body.revisionFile || typeof body.revisionFile.name !== "string" || typeof body.revisionFile.data !== "string") throw new HttpError(400,"Upload a PDF document containing the required revisions.");
+      revisionFileName=path.basename(body.revisionFile.name).slice(0,255);
+      const type=String(body.revisionFile.type||"").toLowerCase();
+      if (!revisionFileName.toLowerCase().endsWith(".pdf") || (type && type!=="application/pdf")) throw new HttpError(400,"Revision instructions must be a PDF file.");
+      revisionFileData=Buffer.from(body.revisionFile.data,"base64");
+      if (!revisionFileData.length || revisionFileData.length>8*1024*1024) throw new HttpError(413,"Revision PDF must be no larger than 8 MB.");
+      if (revisionFileData.subarray(0,5).toString("ascii")!=="%PDF-") throw new HttpError(400,"The revision document does not appear to be a valid PDF.");
+    }
     const current=await pool.query("SELECT status FROM lesson_plan_uploads WHERE id=$1",[reviewMatch[1]]);
     if (!current.rowCount) throw new HttpError(404,"Lesson-plan submission not found.");
     if (!["Submitted","Late"].includes(current.rows[0].status)) throw new HttpError(409,"Only submissions awaiting review can be reviewed. A revised submission must be uploaded before it can be approved.");
-    await pool.query("UPDATE lesson_plan_uploads SET status=$1,admin_feedback=$2,reviewed_by=$3,reviewed_at=NOW() WHERE id=$4",
-      [status,feedback,actor.id,reviewMatch[1]]);
+    await pool.query("UPDATE lesson_plan_uploads SET status=$1,admin_feedback=$2,admin_revision_file_name=$3,admin_revision_file_mime='application/pdf',admin_revision_file_size=$4,admin_revision_file_data=$5,reviewed_by=$6,reviewed_at=NOW() WHERE id=$7",
+      [status,feedback,revisionFileName,revisionFileData?.length||0,revisionFileData,actor.id,reviewMatch[1]]);
     sendJson(response,200,{ok:true}); return true;
   }
   return false;
