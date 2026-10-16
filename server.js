@@ -689,6 +689,54 @@ async function handleLessonPlanRoutes(request, response, url, actor) {
     } catch(e) { await conn.query("ROLLBACK"); throw e; } finally { conn.release(); }
     sendJson(response, 200, { ok: true }); return true;
   }
+  const daysAssignment = url.pathname.match(/^\/api\/lesson-plans\/assignments\/(\d+)\/days$/);
+  if (daysAssignment && request.method === "PUT") {
+    ensureSameOrigin(request); requireRole(actor, admin);
+    const body = await parseJson(request), assignmentId = Number(daysAssignment[1]), term = Number(body.termNumber);
+    const weekdays = [...new Set((Array.isArray(body.weekdays) ? body.weekdays : []).map(Number))].sort((x, y) => x - y);
+    if (![1,2,3].includes(term)) throw new HttpError(400, "Choose Term 1, 2, or 3.");
+    if (!weekdays.length || weekdays.some((d) => !Number.isInteger(d) || d < 1 || d > 5)) throw new HttpError(400, "Choose at least one instruction day from Monday to Friday.");
+    const conn = await pool.connect();
+    try {
+      await conn.query("BEGIN");
+      const a = await conn.query("SELECT teacher_id,subject_id FROM lesson_plan_subject_assignments WHERE id=$1 FOR UPDATE", [assignmentId]);
+      if (!a.rowCount) throw new HttpError(404, "Teacher–subject assignment not found.");
+      const { teacher_id: teacherId, subject_id: subjectId } = a.rows[0];
+      const existing = await conn.query(`SELECT id,week_number,to_char(due_date,'YYYY-MM-DD') AS due FROM lesson_plan_generated_tasks
+        WHERE term_number=$1 AND teacher_id=$2 AND subject_id=$3 ORDER BY week_number,due_date`, [term,teacherId,subjectId]);
+      if (!existing.rowCount) throw new HttpError(400, "This subject has no schedule for the selected term yet. Create it in the Schedule tab first.");
+      const weeks = Math.max(...existing.rows.map((r) => r.week_number));
+      const ref = existing.rows[0];
+      const refDate = new Date(`${ref.due}T12:00:00Z`);
+      const monday = new Date(refDate);
+      monday.setUTCDate(monday.getUTCDate() - ((refDate.getUTCDay() + 6) % 7) - (ref.week_number - 1) * 7);
+      const settings = await conn.query("SELECT to_char(start_date,'YYYY-MM-DD') AS s FROM lesson_plan_term_settings WHERE term_number=$1", [term]);
+      const first = settings.rowCount && settings.rows[0].s ? new Date(`${settings.rows[0].s}T12:00:00Z`) : null;
+      const wanted = new Map();
+      for (let w = 1; w <= weeks; w++) for (const wd of weekdays) {
+        const date = new Date(monday); date.setUTCDate(date.getUTCDate() + (w - 1) * 7 + (wd - 1));
+        if (first && date < first) continue;
+        wanted.set(date.toISOString().slice(0, 10), w);
+      }
+      const have = new Set(existing.rows.map((r) => r.due));
+      // Remove days that are no longer taught, but never delete a day that already has a submission.
+      await conn.query(`DELETE FROM lesson_plan_generated_tasks t WHERE t.term_number=$1 AND t.teacher_id=$2 AND t.subject_id=$3
+        AND NOT (to_char(t.due_date,'YYYY-MM-DD') = ANY($4::text[])) AND NOT EXISTS (SELECT 1 FROM lesson_plan_uploads x WHERE x.task_id=t.id)`, [term,teacherId,subjectId,[...wanted.keys()]]);
+      // Park remaining rows on high day numbers so renumbering cannot collide.
+      await conn.query(`UPDATE lesson_plan_generated_tasks SET day_number=day_number+1000 WHERE term_number=$1 AND teacher_id=$2 AND subject_id=$3`, [term,teacherId,subjectId]);
+      let n = 0;
+      for (const [due, w] of wanted) {
+        if (have.has(due)) continue;
+        await conn.query(`INSERT INTO lesson_plan_generated_tasks(term_number,week_number,day_number,teacher_id,subject_id,due_date)
+          VALUES($1,$2,$3,$4,$5,$6::date)`, [term,w,2000 + (n++),teacherId,subjectId,due]);
+      }
+      await conn.query(`UPDATE lesson_plan_generated_tasks t SET day_number=r.rn FROM (
+          SELECT id, ROW_NUMBER() OVER (PARTITION BY week_number ORDER BY due_date) AS rn FROM lesson_plan_generated_tasks
+          WHERE term_number=$1 AND teacher_id=$2 AND subject_id=$3) r WHERE t.id=r.id`, [term,teacherId,subjectId]);
+      await conn.query("COMMIT");
+    } catch(e) { await conn.query("ROLLBACK"); throw e; } finally { conn.release(); }
+    sendJson(response, 200, { ok: true }); return true;
+  }
   if (url.pathname === "/api/lesson-plans/generate" && request.method === "POST") {
     ensureSameOrigin(request); requireRole(actor, admin);
     const body = await parseJson(request);

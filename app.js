@@ -318,6 +318,14 @@ function lpTeacherGroup(teacherId,teacherName){
 const lpNeedsReview=t=>!!t.upload_id && ["submitted","late"].includes(String(t.status||"").toLowerCase());
 const lpDot=n=>n>0?`<span class="review-dot" title="${n} to review" aria-label="${n} to review">${n}</span>`:"";
 const accOpen={assign:null,summary:null};
+let lpAssignQuery="", summaryQuery="", lpTeachersCache=[];
+const lpNorm=v=>String(v||"").toLowerCase().replace(/\s+/g," ").trim();
+// Keep a teacher if the query matches the teacher or any subject; if only subjects match, keep just those subjects.
+function lpFilterSubjects(teacherName,subjects,nameOf,query){
+  const q=lpNorm(query); if(!q) return subjects;
+  if(lpNorm(teacherName).includes(q)) return subjects;
+  return subjects.filter(s=>lpNorm(nameOf(s)).includes(q));
+}
 function lpGroupedMarkup(entries,renderEntry){
   // entries: [{group, ...}] -> grouped sections in JHS, SHS, Other order
   return LP_GROUPS.map(g=>{
@@ -524,12 +532,17 @@ function renderLpAssignments(teachers){
   lessonPlanTasks.forEach(t=>{ if(lpNeedsReview(t)){const k=`${t.teacher_id}|${t.subject_id}`; reviewBySubject.set(k,(reviewBySubject.get(k)||0)+1);} });
   const byTeacher=new Map();
   scheduled.forEach(a=>{ if(!byTeacher.has(a.teacher_id)) byTeacher.set(a.teacher_id,{id:a.teacher_id,name:a.teacher_name,items:[]}); byTeacher.get(a.teacher_id).items.push(a); });
-  const entries=[...byTeacher.values()].sort((x,y)=>x.name.localeCompare(y.name)).map(g=>({...g,group:lpTeacherGroup(g.id,g.name)}));
+  lpTeachersCache=teachers;
+  const entries=[...byTeacher.values()].sort((x,y)=>x.name.localeCompare(y.name)).map(g=>({...g,items:lpFilterSubjects(g.name,g.items,a=>a.subject_name,lpAssignQuery),group:lpTeacherGroup(g.id,g.name)})).filter(g=>g.items.length);
+  if(!entries.length){ host.innerHTML=emptyFeed(`No teacher or subject matches "${lpAssignQuery}".`); return; }
+  if(lpNorm(lpAssignQuery) && entries.length===1) accOpen.assign=entries[0].id;
   host.setAttribute("data-acc-root","");
   host.innerHTML=lpGroupedMarkup(entries,g=>{
     const tReview=g.items.reduce((n,a)=>n+(reviewBySubject.get(`${a.teacher_id}|${a.subject_id}`)||0),0);
     const head=`<span class="acc-name">${escapeHtml(g.name)}</span>${lpDot(tReview)}<small>${g.items.length} subject${g.items.length>1?"s":""}</small>`;
-    const body=g.items.map(a=>{const st=stats.get(`${a.teacher_id}|${a.subject_id}`);const rv=reviewBySubject.get(`${a.teacher_id}|${a.subject_id}`)||0;return `<div class="lp-assignment-row"><div><strong>${escapeHtml(a.subject_name)}${lpDot(rv)}</strong><small>${st.submitted} of ${st.total} submitted</small></div><div class="row-actions"><button type="button" class="action-link" data-lp-assignment-open="${a.teacher_id}|${a.subject_id}|${escapeHtml(a.subject_name)}">View plans</button><button type="button" class="action-link" data-lp-edit="${a.id}">Edit</button><button type="button" class="action-link danger-link" data-lp-remove="${a.id}">Delete</button></div></div><form class="lp-assignment-edit" data-lp-edit-form="${a.id}" hidden><label class="login-field">Teacher<select name="teacherId" required>${teachers.map(u=>`<option value="${u.id}" ${String(u.id)===String(a.teacher_id)?"selected":""}>${escapeHtml(u.displayName)}</option>`).join("")}</select></label><label class="login-field">Subject name<input name="subjectName" maxlength="160" required value="${escapeHtml(a.subject_name)}"></label><div class="form-actions"><button class="button button-primary" type="submit">Save changes</button><button class="button button-secondary" type="button" data-lp-cancel-edit="${a.id}">Cancel</button></div><small>Uploaded files and revision history are retained.</small></form>`;}).join("");
+    const daysOf=(a)=>{const set=new Set();lessonPlanTasks.forEach(t=>{if(String(t.teacher_id)===String(a.teacher_id)&&String(t.subject_id)===String(a.subject_id)){const [y,m,d]=lpDay(t).split("-").map(Number);const wd=new Date(y,m-1,d).getDay();if(wd>=1&&wd<=5)set.add(wd);}});return set;};
+    const dayChips=(a)=>{const cur=daysOf(a);return `<fieldset class="day-picker lp-edit-days" data-orig="${[...cur].sort().join(",")}"><legend>Days taught \u00b7 Term ${term}</legend>${[[1,"Mon"],[2,"Tue"],[3,"Wed"],[4,"Thu"],[5,"Fri"]].map(([v,l])=>`<label class="day-chip"><input type="checkbox" name="weekday" value="${v}" ${cur.has(v)?"checked":""}/><span>${l}</span></label>`).join("")}</fieldset>`;};
+    const body=g.items.map(a=>{const st=stats.get(`${a.teacher_id}|${a.subject_id}`);const rv=reviewBySubject.get(`${a.teacher_id}|${a.subject_id}`)||0;return `<div class="lp-assignment-row"><div><strong>${escapeHtml(a.subject_name)}${lpDot(rv)}</strong><small>${st.submitted} of ${st.total} submitted</small></div><div class="row-actions"><button type="button" class="action-link" data-lp-assignment-open="${a.teacher_id}|${a.subject_id}|${escapeHtml(a.subject_name)}">View plans</button><button type="button" class="action-link" data-lp-edit="${a.id}">Edit</button><button type="button" class="action-link danger-link" data-lp-remove="${a.id}">Delete</button></div></div><form class="lp-assignment-edit" data-lp-edit-form="${a.id}" hidden><label class="login-field">Teacher<select name="teacherId" required>${teachers.map(u=>`<option value="${u.id}" ${String(u.id)===String(a.teacher_id)?"selected":""}>${escapeHtml(u.displayName)}</option>`).join("")}</select></label><label class="login-field">Subject name<input name="subjectName" maxlength="160" required value="${escapeHtml(a.subject_name)}"></label>${dayChips(a)}<div class="form-actions"><button class="button button-primary" type="submit">Save changes</button><button class="button button-secondary" type="button" data-lp-cancel-edit="${a.id}">Cancel</button></div><small>Uploaded files and revision history are retained. Days with a submission are never removed.</small></form>`;}).join("");
     return accItem("assign",g.id,head,body,"content-card lp-assignment-card");
   });
 }
@@ -595,7 +608,7 @@ async function refreshLpNotifications() {
       const i=lpInfo(t);
       const what=i.tone==="overdue" ? (teacher?"Upload your lesson plan now — it is past its due date":"Teacher has not uploaded this lesson plan")
         : teacher ? (t.status==="Approved"?"Confirm administrator approval":"Revise and re-upload the PDF") : "Review teacher submission";
-      return `<article class="feed-item lp-feed lp-${i.tone}${teacher?"":" lp-feed-link"}"${teacher?"":` data-lp-notif="${t.id}" tabindex="0" role="button" aria-label="Open this lesson plan"`}><div class="lp-feed-top"><h3>${escapeHtml(t.subject_name)} · Term ${t.term_number}, Week ${t.week_number}, Day ${t.day_number}</h3><span class="lp-chip lp-${i.tone}">${i.label}</span></div><p>${escapeHtml(what)}. Due ${escapeHtml(lpDateLabel(lpDay(t),{month:"short",day:"numeric",year:"numeric"}))}</p><small>${escapeHtml(teacher?"Daily submission":t.teacher_name)}${teacher?"":" · Click to open"}</small></article>`;
+      return `<article class="feed-item lp-feed lp-${i.tone}${teacher?"":" lp-feed-link"}"${teacher?"":` data-lp-notif="${t.id}" tabindex="0" role="button" aria-label="Open this lesson plan"`}><div class="lp-feed-top"><h3>${escapeHtml(t.subject_name)} · Term ${t.term_number}, Week ${t.week_number}, Day ${t.day_number}</h3><span class="lp-chip lp-${i.tone}">${i.label}</span></div><p>${escapeHtml(what)}. Due ${escapeHtml(lpDateLabel(lpDay(t),{month:"short",day:"numeric",year:"numeric"}))}</p><small>${escapeHtml(teacher?"Daily submission":t.teacher_name)}</small>${teacher?"":`<span class="lp-open-hint">Open lesson plan \u2192</span>`}</article>`;
     }).join("") + (items.length>10?`<p class="lp-more">+ ${items.length-10} more in Lesson Plans</p>`:"");
   } catch(error) { /* Dashboard notification is supplementary; page-level errors are shown by the main workspace. */ }
 }
@@ -899,6 +912,9 @@ document.querySelector("#lp-generate-form").addEventListener("submit", async (ev
   } catch(e){setGlobalError(e.message);} finally { submit.disabled=false; }
 });
 
+document.querySelector("#lp-assign-search").addEventListener("input",(e)=>{lpAssignQuery=e.target.value;renderLpAssignments(lpTeachersCache);});
+document.querySelector("#summary-search").addEventListener("input",(e)=>{summaryQuery=e.target.value;renderSummary();});
+
 /* Admin: open a lesson plan straight from a notification; it is cleared once viewed */
 async function openLpFromNotification(taskId){
   const t=lpNotifTasks.get(String(taskId)); if(!t||!isLpAdmin()) return;
@@ -957,7 +973,13 @@ document.querySelector("#lp-assignment-list").addEventListener("click",async(eve
   const open=event.target.closest("[data-lp-assignment-open]");if(open){const [teacherId,subjectId,subject]=open.dataset.lpAssignmentOpen.split("|");selectedLpSubject=subject;selectedLpTeacherId=teacherId;selectedLpSubjectId=subjectId;setLpTab("progress");if(!lpTerm())setGlobalError("Choose a term first to view lesson plans.");document.querySelector("#lp-task-detail-heading").textContent=`${subject} · Term ${document.querySelector("#lp-view-term").value}`;document.querySelector("#lesson-plan-task-panel").hidden=false;renderLessonPlanTasks();document.querySelector("#lesson-plan-task-panel").scrollIntoView({behavior:"smooth",block:"start"});return;}
   const remove=event.target.closest("[data-lp-remove]");if(remove){if(!confirm("Delete this subject for this teacher? Its calendars in ALL terms will be removed. Uploaded PDFs and revision history attached to those tasks will also be permanently deleted."))return;try{await api(`/api/lesson-plans/assignments/${remove.dataset.lpRemove}`,{method:"DELETE"});await refreshLessonPlans();showToast("Assignment deleted.");}catch(e){setGlobalError(e.message);} }
 });
-document.querySelector("#lp-assignment-list").addEventListener("submit",async(event)=>{const form=event.target.closest("[data-lp-edit-form]");if(!form)return;event.preventDefault();const data=new FormData(form);try{await api(`/api/lesson-plans/assignments/${form.dataset.lpEdit}`,{method:"PUT",body:{teacherId:Number(data.get("teacherId")),subjectName:String(data.get("subjectName")).trim()}});await refreshLessonPlans();showToast("Teacher–subject assignment updated.");}catch(e){setGlobalError(e.message);}});
+document.querySelector("#lp-assignment-list").addEventListener("submit",async(event)=>{const form=event.target.closest("[data-lp-edit-form]");if(!form)return;event.preventDefault();const data=new FormData(form);try{
+  const days=[...form.querySelectorAll('input[name="weekday"]:checked')].map(i=>Number(i.value)).sort();
+  const picker=form.querySelector(".lp-edit-days");
+  if(picker&&!days.length){setGlobalError("Choose at least one day the subject is taught.");return;}
+  await api(`/api/lesson-plans/assignments/${form.dataset.lpEdit}`,{method:"PUT",body:{teacherId:Number(data.get("teacherId")),subjectName:String(data.get("subjectName")).trim()}});
+  if(picker&&days.join(",")!==picker.dataset.orig){await api(`/api/lesson-plans/assignments/${form.dataset.lpEdit}/days`,{method:"PUT",body:{termNumber:Number(lpTerm()),weekdays:days}});}
+  await refreshLessonPlans();showToast("Teacher–subject assignment updated.");}catch(e){setGlobalError(e.message);}});
 document.querySelector("#view-lesson-plans").addEventListener("click",async(event)=>{const button=event.target.closest(".lp-confirm-approval");if(!button)return;if(!confirm("Confirm that you have received the administrator's approval? This will mark the lesson plan as completed."))return;try{await api(`/api/lesson-plans/uploads/${button.dataset.uploadId}/confirm`,{method:"POST",body:{}});await refreshLessonPlans();await refreshLpNotifications();showToast("Approval confirmed. Lesson plan completed.");}catch(e){setGlobalError(e.message);}});
 
 document.querySelector("#view-lesson-plans").addEventListener("change",(event)=>{const select=event.target.closest('.lp-review-form select[name="status"]');if(!select)return;const field=select.closest(".lp-review-form").querySelector(".lp-revision-file-field");if(field){field.hidden=select.value!=="For Revision";const input=field.querySelector("input");if(input)input.required=select.value==="For Revision";}});
@@ -1035,7 +1057,12 @@ function renderSummary() {
   const host = document.querySelector("#summary-list");
   if (!byTeacher.size) { host.innerHTML = emptyFeed(summaryTerm === "all" ? "No lesson-plan schedules have been created yet." : `No lesson-plan schedules exist for Term ${summaryTerm}.`); return; }
   host.setAttribute("data-acc-root", "");
-  const summaryEntries = [...byTeacher.entries()].map(([id, v]) => ({ ...v, id, group: lpTeacherGroup(id, v.name) })).sort((a, b) => a.name.localeCompare(b.name));
+  const summaryEntries = [...byTeacher.entries()].map(([id, v]) => {
+    const kept = lpFilterSubjects(v.name, [...v.subjects.entries()], ([, s]) => s.name, summaryQuery);
+    return { ...v, subjects: new Map(kept), id, group: lpTeacherGroup(id, v.name) };
+  }).filter(e => e.subjects.size).sort((a, b) => a.name.localeCompare(b.name));
+  if (!summaryEntries.length) { host.innerHTML = emptyFeed(`No teacher or subject matches "${summaryQuery}".`); return; }
+  if (lpNorm(summaryQuery) && summaryEntries.length === 1) accOpen.summary = summaryEntries[0].id;
   host.innerHTML = lpGroupedMarkup(summaryEntries, teacher => {
     const t = tally([...teacher.subjects.values()].flatMap(s => s.tasks));
     const pct = t.total ? Math.round(t.submitted / t.total * 100) : 0;

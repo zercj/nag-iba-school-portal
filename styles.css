@@ -704,3 +704,9 @@ body { font-size: 15px; line-height: 1.5; }
 .review-dot { display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 5px; margin-left: 6px; border-radius: 99px; background: #d92d20; color: #fff; font-size: 11px; font-weight: 700; line-height: 1; vertical-align: middle; box-shadow: 0 0 0 2px #fff; }
 .lp-feed-link { cursor: pointer; }
 .lp-feed-link:hover, .lp-feed-link:focus-visible { box-shadow: 0 0 0 2px #b9c8e3; outline: none; }
+
+.lp-open-hint { display: inline-block; margin-left: 10px; color: #2d4fa3; font-size: 12px; font-weight: 600; }
+.lp-feed-link:hover .lp-open-hint { text-decoration: underline; }
+.summary-search { margin-bottom: 10px; max-width: 360px; }
+.lp-edit-days { grid-column: 1 / -1; }
+#lp-assignments-panel .panel-heading { flex-wrap: wrap; gap: 10px; }
