@@ -683,3 +683,24 @@ body { font-size: 15px; line-height: 1.5; }
 .lp-subject-pill { min-height: 44px; }
 @media (max-width: 760px) { .anc-head { flex-direction: column; } .anc-detail, .anc-board .lp-subject-pills { padding-left: 14px; padding-right: 14px; } }
 .lp-subject-pill { height: auto; padding: 8px 16px; font-size: 14px; text-align: left; }
+
+/* ---------- Admin organisation: groups, accordions, review dots ---------- */
+.teacher-group { margin: 0 0 18px; }
+.teacher-group-title { display: flex; align-items: center; gap: 8px; margin: 4px 0 10px; padding-bottom: 6px; border-bottom: 2px solid #e1e7ef; color: #1f3358; font-size: 13px; letter-spacing: .04em; text-transform: uppercase; }
+.teacher-group-count { padding: 1px 8px; border-radius: 99px; background: #eaf0fa; color: #3b5a8f; font-size: 11px; }
+.teacher-group-row td { background: #f3f6fb; color: #1f3358; font-weight: 700; font-size: 12px; letter-spacing: .04em; text-transform: uppercase; }
+.acc-item { margin-bottom: 8px; padding: 0 !important; overflow: hidden; }
+.acc-head { display: flex; align-items: center; gap: 10px; width: 100%; padding: 12px 16px; border: 0; background: transparent; text-align: left; cursor: pointer; font: inherit; color: inherit; }
+.acc-head:hover { background: #f6f8fc; }
+.acc-chevron { display: inline-block; color: #6f7e91; transition: transform .15s; }
+.acc-item.is-open > .acc-head .acc-chevron { transform: rotate(90deg); }
+.acc-item.is-open > .acc-head { border-bottom: 1px solid #eef1f5; background: #f6f8fc; }
+.acc-title { display: flex; flex: 1; flex-wrap: wrap; align-items: center; gap: 4px 10px; min-width: 0; }
+.acc-name { color: #1f3358; font-size: 15px; font-weight: 600; }
+.acc-title small { color: #7d8a9b; font-size: 12px; }
+.acc-title .lp-progress-cell { margin-left: auto; min-width: 110px; }
+.acc-body { padding: 4px 16px 12px; }
+.acc-body[hidden] { display: none; }
+.review-dot { display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 5px; margin-left: 6px; border-radius: 99px; background: #d92d20; color: #fff; font-size: 11px; font-weight: 700; line-height: 1; vertical-align: middle; box-shadow: 0 0 0 2px #fff; }
+.lp-feed-link { cursor: pointer; }
+.lp-feed-link:hover, .lp-feed-link:focus-visible { box-shadow: 0 0 0 2px #b9c8e3; outline: none; }

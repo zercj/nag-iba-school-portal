@@ -15,7 +15,6 @@ const port = Number(process.env.PORT || 8000);
 const appOrigin = process.env.APP_ORIGIN || process.env.RENDER_EXTERNAL_URL;
 const isProduction = process.env.NODE_ENV === "production";
 const sessionDurationMs = 8 * 60 * 60 * 1000;
-const loginAttempts = new Map();
 const staticFiles = new Map([
   ["/", ["index.html", "text/html; charset=utf-8"]],
   ["/index.html", ["index.html", "text/html; charset=utf-8"]],
@@ -244,20 +243,6 @@ async function inTransaction(callback) {
   }
 }
 
-function rateLimitLogin(request) {
-  const now = Date.now();
-  const key = request.socket.remoteAddress || "unknown";
-  const attempts = (loginAttempts.get(key) || []).filter((time) => now - time < 15 * 60 * 1000);
-  if (attempts.length >= 10) throw new HttpError(429, "Too many sign-in attempts. Try again in 15 minutes.");
-  attempts.push(now);
-  loginAttempts.set(key, attempts);
-}
-
-function clearLoginAttempts(request) {
-  const key = request.socket.remoteAddress || "unknown";
-  loginAttempts.delete(key);
-}
-
 async function bootstrapDevelopers() {
   const raw = process.env.BOOTSTRAP_DEVELOPERS || "[]";
   let developers;
@@ -302,7 +287,6 @@ async function bootstrapDevelopers() {
 async function authenticate(request, response, url) {
   if (request.method === "POST" && url.pathname === "/api/auth/login") {
     ensureSameOrigin(request);
-    rateLimitLogin(request);
     const body = await parseJson(request);
     const username = normalizeUsername(body.username);
     const password = typeof body.password === "string" ? body.password : "";
@@ -320,7 +304,6 @@ async function authenticate(request, response, url) {
     if (user) valid = await passwordMatches(password, user.password_hash);
     else await scrypt(password, "missing-account-salt", 64);
     if (!valid) throw new HttpError(401, "Invalid username or password.");
-    clearLoginAttempts(request);
     const token = randomBytes(32).toString("base64url");
     const expiresAt = new Date(Date.now() + sessionDurationMs);
     await pool.query(
