@@ -214,3 +214,44 @@ ALTER TABLE lesson_plan_upload_versions ADD COLUMN IF NOT EXISTS admin_revision_
 
 -- Unified scheduling: the administrator picks instruction days (1=Mon … 5=Fri).
 ALTER TABLE lesson_plan_term_settings ADD COLUMN IF NOT EXISTS weekdays TEXT NOT NULL DEFAULT '1,2,3,4,5';
+
+-- Ancillary tasks: manual, admin-created work (e.g. MPS) assigned to all or selected teachers.
+CREATE TABLE IF NOT EXISTS ancillary_tasks (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  title TEXT NOT NULL CHECK (CHAR_LENGTH(title) BETWEEN 1 AND 180),
+  description TEXT NOT NULL DEFAULT '',
+  due_date DATE NOT NULL,
+  all_teachers BOOLEAN NOT NULL DEFAULT FALSE,
+  created_by BIGINT REFERENCES users(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS ancillary_task_teachers (
+  task_id BIGINT NOT NULL REFERENCES ancillary_tasks(id) ON DELETE CASCADE,
+  teacher_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  PRIMARY KEY (task_id, teacher_id)
+);
+CREATE TABLE IF NOT EXISTS ancillary_attachments (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  task_id BIGINT NOT NULL REFERENCES ancillary_tasks(id) ON DELETE CASCADE,
+  file_name TEXT NOT NULL,
+  mime_type TEXT NOT NULL DEFAULT 'application/octet-stream',
+  file_size BIGINT NOT NULL,
+  file_data BYTEA NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS ancillary_submissions (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  task_id BIGINT NOT NULL REFERENCES ancillary_tasks(id) ON DELETE CASCADE,
+  teacher_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  file_name TEXT NOT NULL,
+  mime_type TEXT NOT NULL DEFAULT 'application/octet-stream',
+  file_size BIGINT NOT NULL,
+  file_data BYTEA NOT NULL,
+  status TEXT NOT NULL DEFAULT 'Submitted' CHECK (status IN ('Submitted','Late','Approved','For Revision')),
+  admin_feedback TEXT NOT NULL DEFAULT '',
+  submitted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  reviewed_by BIGINT REFERENCES users(id) ON DELETE SET NULL,
+  reviewed_at TIMESTAMPTZ,
+  UNIQUE (task_id, teacher_id)
+);
+CREATE INDEX IF NOT EXISTS ancillary_submissions_teacher_idx ON ancillary_submissions (teacher_id, task_id);

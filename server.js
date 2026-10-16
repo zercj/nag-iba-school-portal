@@ -891,6 +891,131 @@ async function handleLessonPlanRoutes(request, response, url, actor) {
   return false;
 }
 
+function readFilePayload(file) {
+  if (!file || typeof file.name !== "string" || !file.name.trim() || typeof file.data !== "string") throw new HttpError(400, "One of the uploaded files is invalid.");
+  const data = Buffer.from(file.data, "base64");
+  if (!data.length) throw new HttpError(400, "The uploaded file is empty.");
+  if (data.length > 8 * 1024 * 1024) throw new HttpError(413, "Each file must be 8 MB or smaller.");
+  return { name: path.basename(file.name).slice(0, 255), mime: String(file.type || "application/octet-stream").slice(0, 150), data };
+}
+
+function sendDownload(response, file) {
+  response.writeHead(200, { "Content-Type": file.mime_type, "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(file.file_name)}`, "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store" });
+  response.end(file.file_data);
+}
+
+async function handleAncillaryRoutes(request, response, url, actor) {
+  const admin = ["admin", "developer"];
+  const isAdmin = admin.includes(actor.role);
+  if (!url.pathname.startsWith("/api/ancillary")) return false;
+  if (!isAdmin && actor.role !== "teacher") throw new HttpError(403, "Ancillary tasks are available to administrators and teachers.");
+
+  if (url.pathname === "/api/ancillary" && request.method === "GET") {
+    const result = await pool.query(`SELECT t.id,t.title,t.description,to_char(t.due_date,'YYYY-MM-DD') AS due_date,t.all_teachers,t.created_at,
+      COALESCE((SELECT json_agg(json_build_object('id',a.id,'fileName',a.file_name,'fileSize',a.file_size) ORDER BY a.id) FROM ancillary_attachments a WHERE a.task_id=t.id),'[]') AS attachments,
+      COALESCE((SELECT json_agg(json_build_object('teacherId',u.id,'teacherName',u.display_name,'submissionId',x.id,'fileName',x.file_name,'fileSize',x.file_size,
+          'status',x.status,'feedback',x.admin_feedback,'submittedAt',x.submitted_at,'late',(x.submitted_at::date > t.due_date)) ORDER BY u.display_name)
+        FROM users u LEFT JOIN ancillary_submissions x ON x.task_id=t.id AND x.teacher_id=u.id
+        WHERE u.role='teacher' AND u.active=TRUE AND ($1 OR u.id=$2)
+          AND (t.all_teachers OR EXISTS (SELECT 1 FROM ancillary_task_teachers a WHERE a.task_id=t.id AND a.teacher_id=u.id))),'[]') AS targets
+      FROM ancillary_tasks t ORDER BY t.due_date DESC,t.id DESC LIMIT 300`, [isAdmin, actor.id]);
+    const tasks = isAdmin ? result.rows : result.rows.filter((row) => row.targets.length > 0);
+    sendJson(response, 200, { tasks }); return true;
+  }
+
+  if (url.pathname === "/api/ancillary" && request.method === "POST") {
+    ensureSameOrigin(request); requireRole(actor, admin);
+    const body = await parseJson(request);
+    const title = requiredText(body.title, "Title", 180);
+    const description = body.description ? requiredText(body.description, "Description", 10000) : "";
+    const dueDate = String(body.dueDate || "");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dueDate) || Number.isNaN(new Date(`${dueDate}T12:00:00Z`).getTime())) throw new HttpError(400, "Choose a valid due date.");
+    const allTeachers = body.allTeachers === true;
+    const teacherIds = [...new Set((Array.isArray(body.teacherIds) ? body.teacherIds : []).map(String))];
+    if (!allTeachers) {
+      if (!teacherIds.length || teacherIds.length > 500 || teacherIds.some((id) => !/^\d+$/.test(id))) throw new HttpError(400, "Choose all teachers or select at least one teacher.");
+      const valid = await pool.query("SELECT id FROM users WHERE id = ANY($1::bigint[]) AND role='teacher' AND active=TRUE", [teacherIds]);
+      if (valid.rowCount !== teacherIds.length) throw new HttpError(400, "Choose active teacher accounts only.");
+    }
+    const files = Array.isArray(body.files) ? body.files : [];
+    if (files.length > 10) throw new HttpError(400, "Attach up to 10 files.");
+    const parsed = files.map(readFilePayload);
+    let created;
+    await inTransaction(async (connection) => {
+      const r = await connection.query("INSERT INTO ancillary_tasks(title,description,due_date,all_teachers,created_by) VALUES($1,$2,$3::date,$4,$5) RETURNING id", [title, description, dueDate, allTeachers, actor.id]);
+      created = r.rows[0];
+      if (!allTeachers) for (const id of teacherIds) await connection.query("INSERT INTO ancillary_task_teachers(task_id,teacher_id) VALUES($1,$2)", [created.id, id]);
+      for (const f of parsed) await connection.query("INSERT INTO ancillary_attachments(task_id,file_name,mime_type,file_size,file_data) VALUES($1,$2,$3,$4,$5)", [created.id, f.name, f.mime, f.data.length, f.data]);
+      await audit(connection, actor.id, "ancillary.created", "ancillary_task", created.id);
+    });
+    sendJson(response, 201, { ok: true, id: created.id }); return true;
+  }
+
+  const taskMatch = url.pathname.match(/^\/api\/ancillary\/(\d+)$/);
+  if (taskMatch && request.method === "DELETE") {
+    ensureSameOrigin(request); requireRole(actor, admin);
+    const r = await pool.query("DELETE FROM ancillary_tasks WHERE id=$1 RETURNING id", [taskMatch[1]]);
+    if (!r.rowCount) throw new HttpError(404, "Ancillary task not found.");
+    await audit(pool, actor.id, "ancillary.deleted", "ancillary_task", taskMatch[1]);
+    sendJson(response, 200, { ok: true }); return true;
+  }
+
+  const submitMatch = url.pathname.match(/^\/api\/ancillary\/(\d+)\/submit$/);
+  if (submitMatch && request.method === "POST") {
+    ensureSameOrigin(request); requireRole(actor, ["teacher"]);
+    const body = await parseJson(request);
+    const file = readFilePayload(body.file);
+    const task = await pool.query(`SELECT t.id,(t.due_date < CURRENT_DATE) AS is_late FROM ancillary_tasks t WHERE t.id=$1
+      AND (t.all_teachers OR EXISTS (SELECT 1 FROM ancillary_task_teachers a WHERE a.task_id=t.id AND a.teacher_id=$2))`, [submitMatch[1], actor.id]);
+    if (!task.rowCount) throw new HttpError(404, "This ancillary task is not assigned to you.");
+    const status = task.rows[0].is_late ? "Late" : "Submitted";
+    await inTransaction(async (connection) => {
+      const current = await connection.query("SELECT status FROM ancillary_submissions WHERE task_id=$1 AND teacher_id=$2 FOR UPDATE", [submitMatch[1], actor.id]);
+      if (current.rowCount) {
+        if (current.rows[0].status !== "For Revision") throw new HttpError(409, current.rows[0].status === "Approved" ? "This submission has already been approved." : "Your submission is awaiting review. You can upload a replacement only if a revision is requested.");
+        await connection.query(`UPDATE ancillary_submissions SET file_name=$1,mime_type=$2,file_size=$3,file_data=$4,status=$5,admin_feedback='',submitted_at=NOW(),reviewed_by=NULL,reviewed_at=NULL WHERE task_id=$6 AND teacher_id=$7`,
+          [file.name, file.mime, file.data.length, file.data, status, submitMatch[1], actor.id]);
+      } else {
+        await connection.query("INSERT INTO ancillary_submissions(task_id,teacher_id,file_name,mime_type,file_size,file_data,status) VALUES($1,$2,$3,$4,$5,$6,$7)",
+          [submitMatch[1], actor.id, file.name, file.mime, file.data.length, file.data, status]);
+      }
+    });
+    sendJson(response, 201, { ok: true, status }); return true;
+  }
+
+  const reviewMatch = url.pathname.match(/^\/api\/ancillary\/submissions\/(\d+)\/review$/);
+  if (reviewMatch && request.method === "POST") {
+    ensureSameOrigin(request); requireRole(actor, admin);
+    const body = await parseJson(request);
+    if (!["Approved", "For Revision"].includes(body.status)) throw new HttpError(400, "Choose Approved or For Revision.");
+    const feedback = String(body.feedback || "").trim().slice(0, 2000);
+    if (body.status === "For Revision" && !feedback) throw new HttpError(400, "Tell the teacher what needs to be revised.");
+    const r = await pool.query("UPDATE ancillary_submissions SET status=$1,admin_feedback=$2,reviewed_by=$3,reviewed_at=NOW() WHERE id=$4 AND status IN ('Submitted','Late') RETURNING id", [body.status, feedback, actor.id, reviewMatch[1]]);
+    if (!r.rowCount) throw new HttpError(409, "Only submissions awaiting review can be reviewed.");
+    sendJson(response, 200, { ok: true }); return true;
+  }
+
+  const subFile = url.pathname.match(/^\/api\/ancillary\/submissions\/(\d+)\/file$/);
+  if (subFile && request.method === "GET") {
+    const r = await pool.query("SELECT teacher_id,file_name,mime_type,file_data FROM ancillary_submissions WHERE id=$1", [subFile[1]]);
+    if (!r.rowCount) throw new HttpError(404, "File not found.");
+    if (!isAdmin && String(r.rows[0].teacher_id) !== String(actor.id)) throw new HttpError(403, "You cannot access this file.");
+    sendDownload(response, r.rows[0]); return true;
+  }
+
+  const attFile = url.pathname.match(/^\/api\/ancillary\/attachments\/(\d+)$/);
+  if (attFile && request.method === "GET") {
+    const r = await pool.query(`SELECT a.file_name,a.mime_type,a.file_data,a.task_id,t.all_teachers FROM ancillary_attachments a JOIN ancillary_tasks t ON t.id=a.task_id WHERE a.id=$1`, [attFile[1]]);
+    if (!r.rowCount) throw new HttpError(404, "Attachment not found.");
+    if (!isAdmin && !r.rows[0].all_teachers) {
+      const ok = await pool.query("SELECT 1 FROM ancillary_task_teachers WHERE task_id=$1 AND teacher_id=$2", [r.rows[0].task_id, actor.id]);
+      if (!ok.rowCount) throw new HttpError(403, "You cannot access this attachment.");
+    }
+    sendDownload(response, r.rows[0]); return true;
+  }
+  return false;
+}
+
 async function handleApi(request, response, url) {
   try {
     if (await authenticate(request, response, url)) return;
@@ -903,6 +1028,7 @@ async function handleApi(request, response, url) {
       handleMessageRoutes,
       handleAnnouncementRoutes,
       handleLessonPlanRoutes,
+      handleAncillaryRoutes,
     ];
     for (const handler of handlers) {
       if (await handler(request, response, url, actor)) return;

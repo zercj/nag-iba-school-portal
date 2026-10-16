@@ -57,6 +57,7 @@
           <button class="nav-link" type="button" data-view="messages"><span class="nav-icon" aria-hidden="true">✉</span>Messages<span class="nav-count" id="unread-count" hidden></span></button>
           <button class="nav-link" type="button" data-view="announcements"><span class="nav-icon" aria-hidden="true">◷</span>Announcements</button>
           <button class="nav-link" type="button" data-view="lesson-plans" id="lesson-plans-nav"><span class="nav-icon" aria-hidden="true">▤</span>Lesson Plans</button>
+          <button class="nav-link" type="button" data-view="ancillary" id="ancillary-nav" hidden><span class="nav-icon" aria-hidden="true">✚</span>Ancillary Tasks</button>
           <button class="nav-link" type="button" data-view="summary" id="summary-nav" hidden><span class="nav-icon" aria-hidden="true">≣</span>Summary</button>
           <button class="nav-link" type="button" data-view="settings"><span class="nav-icon" aria-hidden="true">⚙</span>Settings</button>
         </nav>
@@ -201,6 +202,35 @@
               <div class="lp-dialog-head"><div><small id="lp-day-kicker"></small><h3 id="lp-day-title">Lesson plan</h3></div><button type="button" class="lp-dialog-close" id="lp-day-close" aria-label="Close">&times;</button></div>
               <div id="lp-day-body" class="lp-dialog-body"></div>
             </dialog>
+          </section>
+
+          <section class="portal-view" id="view-ancillary" hidden>
+            <div class="section-heading"><div><h2>Ancillary tasks</h2><p id="anc-subtitle">Manually assigned work, such as MPS reports, that is not part of the lesson-plan schedule.</p></div></div>
+            <section class="panel compose-panel" id="anc-compose-panel" hidden>
+              <details id="anc-compose-details">
+                <summary class="anc-summary-toggle">＋ New ancillary task</summary>
+                <form id="anc-form" class="portal-form">
+                  <label class="login-field" for="anc-title">Task title<input id="anc-title" maxlength="180" required placeholder="e.g. Submission of MPS – 1st Quarter" /></label>
+                  <label class="login-field" for="anc-description">Instructions (optional)<textarea id="anc-description" rows="3" maxlength="10000"></textarea></label>
+                  <div class="form-row">
+                    <label class="login-field" for="anc-due">Due date<input id="anc-due" type="date" required /></label>
+                    <label class="login-field" for="anc-files">Reference files (optional, any type, 8 MB each)<input id="anc-files" type="file" multiple /></label>
+                  </div>
+                  <fieldset class="day-picker">
+                    <legend>Assign to</legend>
+                    <label class="day-chip"><input type="radio" name="anc-target" value="all" checked /><span>All teachers</span></label>
+                    <label class="day-chip"><input type="radio" name="anc-target" value="selected" /><span>Selected teachers</span></label>
+                  </fieldset>
+                  <div id="anc-teacher-picker" class="anc-teacher-picker" hidden></div>
+                  <div class="form-actions"><span class="form-hint">Teachers can upload any type of document in response.</span><button class="button button-primary" type="submit">Assign task</button></div>
+                </form>
+              </details>
+            </section>
+            <section class="panel anc-board">
+              <div class="panel-heading"><div><span class="anc-label">ANCILLARY TASKS</span><p id="anc-board-hint">Select a task to open it.</p></div></div>
+              <div id="anc-pills" class="lp-subject-pills" role="tablist" aria-label="Ancillary tasks"></div>
+              <div id="anc-detail" class="anc-detail"></div>
+            </section>
           </section>
 
           <section class="portal-view" id="view-summary" hidden>

@@ -11,6 +11,7 @@ const viewTitles = {
   messages: ["Messages", "Send and receive private messages with school accounts."],
   announcements: ["Announcements", "School and classroom updates."],
   "lesson-plans": ["Lesson Plans", "Schedule, submit and review daily lesson plans."],
+  ancillary: ["Ancillary Tasks", "Manually assigned tasks and document submissions."],
   summary: ["Summary", "Teachers, their subjects and lesson-plan submissions at a glance."],
   settings: ["Settings", "Update your account security settings."],
 };
@@ -104,6 +105,9 @@ function updateNavigation() {
   document.querySelector("#lesson-plans-nav").hidden = !["admin","developer","teacher"].includes(currentUser.role);
   const lpAdminRole = ["admin","developer"].includes(currentUser.role);
   document.querySelector("#summary-nav").hidden = !lpAdminRole;
+  document.querySelector("#ancillary-nav").hidden = currentUser.role === "student";
+  document.querySelector("#anc-compose-panel").hidden = !lpAdminRole;
+  document.querySelector("#anc-subtitle").textContent = lpAdminRole ? "Create manual tasks (like MPS), assign them to all or selected teachers, and review the documents they upload." : "Tasks assigned to you by the administrator. Upload any document to submit.";
   document.querySelectorAll("#view-lesson-plans [data-admin-only]").forEach(el => { el.hidden = !lpAdminRole; });
   document.querySelector("#lesson-plan-admin-panel").hidden = !lpAdminRole;
   document.querySelector("#lp-page-subtitle").textContent = lpAdminRole
@@ -130,6 +134,7 @@ function goToView(view) {
   if (!viewTitles[view]) return;
   if (view === "users" && !userCanManageAccounts()) return;
   if (view === "summary" && !isLpAdmin()) return;
+  if (view === "ancillary" && currentUser.role === "student") return;
   if (view === "lesson-plans" && currentUser.role === "student") return;
   currentView = view;
   for (const section of document.querySelectorAll(".portal-view")) {
@@ -152,6 +157,7 @@ function goToView(view) {
   if (view === "messages") refreshMessages();
   if (view === "announcements") refreshAnnouncements();
   if (view === "summary") refreshSummary();
+  if (view === "ancillary") refreshAncillary();
   if (view === "lesson-plans") refreshLessonPlans();
 }
 
@@ -350,9 +356,9 @@ function renderLessonPlanTasks() {
     const host=document.querySelector("#lp-teacher-task-list");
     if(!term){ host.innerHTML=""; return; }
     const subjects=new Map();
-    lessonPlanTasks.forEach(t=>{ if(!subjects.has(t.subject_id)) subjects.set(t.subject_id,{id:t.subject_id,name:t.subject_name,tasks:[]}); subjects.get(t.subject_id).tasks.push(t); });
+    lessonPlanTasks.forEach(t=>{ const sid=String(t.subject_id); if(!subjects.has(sid)) subjects.set(sid,{id:sid,name:t.subject_name,tasks:[]}); subjects.get(sid).tasks.push(t); });
     if(!subjects.size){ host.innerHTML=`<section class="panel lp-cal-panel">${emptyFeed("No lesson-plan calendar assigned to you for this term yet.")}</section>`; return; }
-    if(!subjects.has(lpTeacherSubjectId)) lpTeacherSubjectId=[...subjects.keys()][0];
+    if(!subjects.has(String(lpTeacherSubjectId))) lpTeacherSubjectId=[...subjects.keys()][0]; lpTeacherSubjectId=String(lpTeacherSubjectId);
     const pills=[...subjects.values()].map(s=>{
       const over=s.tasks.filter(t=>lpInfo(t).tone==="overdue").length;
       return `<button type="button" class="lp-subject-pill${s.id===lpTeacherSubjectId?" is-active":""}" data-lp-subject-pill="${s.id}">${escapeHtml(s.name)}${over?`<span class="lp-pill-alert" title="${over} overdue">${over}</span>`:""}</button>`;
@@ -389,7 +395,7 @@ function lpTaskControls(t, admin){
 function renderLpDialog(){
   if(!lpOpenDay) return;
   const admin=isLpAdmin();
-  const source=admin?lpAdminVisibleTasks():lessonPlanTasks.filter(t=>t.subject_id===lpTeacherSubjectId);
+  const source=admin?lpAdminVisibleTasks():lessonPlanTasks.filter(t=>String(t.subject_id)===String(lpTeacherSubjectId));
   const list=source.filter(t=>lpDay(t)===lpOpenDay.date);
   const dlg=document.querySelector("#lp-day-dialog");
   if(!list.length){ dlg.close(); return; }
@@ -571,7 +577,7 @@ async function loadDashboard(user) {
   updateNavigation();
   let saved = "overview";
   try { saved = sessionStorage.getItem("portalView") || "overview"; } catch (_) {}
-  goToView(saved === "lesson-plans" || saved === "summary" || saved === "overview" || saved === "settings" || saved === "messages" || saved === "announcements" ? saved : "overview");
+  goToView(saved === "lesson-plans" || saved === "summary" || saved === "ancillary" || saved === "overview" || saved === "settings" || saved === "messages" || saved === "announcements" ? saved : "overview");
   if (currentView !== saved) goToView("overview");
   try {
     await refreshOverview();
@@ -839,7 +845,7 @@ document.querySelector("#view-lesson-plans").addEventListener("click",(event)=>{
   const nav=event.target.closest("[data-lp-cal-nav]");
   if(nav){const st=lpCal[nav.dataset.lpScope];const [y,m]=st.month.split("-").map(Number);const d=new Date(y,m-1+Number(nav.dataset.lpCalNav),1);st.month=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;renderLessonPlanTasks();return;}
   const pill=event.target.closest("[data-lp-subject-pill]");
-  if(pill){lpTeacherSubjectId=Number(pill.dataset.lpSubjectPill);renderLessonPlanTasks();}
+  if(pill){lpTeacherSubjectId=String(pill.dataset.lpSubjectPill);renderLessonPlanTasks();}
 });
 document.querySelector("#lp-subject-progress").addEventListener("click",(event)=>{
   const trigger=event.target.closest("[data-lp-open-subject]");
@@ -958,6 +964,111 @@ function renderSummary() {
 document.querySelector("#view-summary").addEventListener("click", (event) => {
   const b = event.target.closest("[data-summary-term]");
   if (b) { summaryTerm = b.dataset.summaryTerm; renderSummary(); }
+});
+
+/* ---------- Ancillary tasks: manual, admin-assigned, any-file submissions ---------- */
+let ancTasks = [];
+let ancSelected = null;
+function ancInfo(target, task) {
+  const st = String(target.status || "");
+  if (!target.submissionId) return lpTodayIso() > task.due_date ? { tone: "overdue", label: "Overdue", short: "Overdue" } : { tone: "pending", label: "Awaiting upload", short: "To do" };
+  if (st === "Approved") return target.late ? { tone: "done-late", label: "Approved · late", short: "Done late" } : { tone: "done", label: "Approved", short: "Approved" };
+  if (st === "For Revision") return { tone: "revision", label: "For revision", short: "Revise" };
+  if (st === "Late") return { tone: "done-late", label: "Submitted late · awaiting review", short: "Late" };
+  return { tone: "review", label: "Submitted · awaiting review", short: "In review" };
+}
+const ancChip = (target, task) => { const i = ancInfo(target, task); return `<span class="lp-chip lp-${i.tone}">${i.label}</span>`; };
+const ancSize = n => Number(n) >= 1048576 ? `${(Number(n) / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(Number(n) / 1024))} KB`;
+
+async function refreshAncillary() {
+  if (!currentUser || currentUser.role === "student") return;
+  try {
+    const calls = [api("/api/ancillary")];
+    if (isLpAdmin()) calls.push(api("/api/directory"));
+    const [result, dir] = await Promise.all(calls);
+    ancTasks = result.tasks || [];
+    if (dir) directory = dir.users;
+    if (!ancTasks.some(t => String(t.id) === String(ancSelected))) ancSelected = ancTasks[0] ? String(ancTasks[0].id) : null;
+    renderAncTeacherPicker();
+    renderAncillary();
+  } catch (error) { setGlobalError(error.message); }
+}
+function renderAncTeacherPicker() {
+  const host = document.querySelector("#anc-teacher-picker");
+  if (!host) return;
+  const checked = new Set([...host.querySelectorAll("input:checked")].map(i => i.value));
+  const teachers = directory.filter(u => u.role === "teacher" && u.active !== false);
+  host.innerHTML = teachers.length ? teachers.map(u => `<label class="anc-check"><input type="checkbox" value="${escapeHtml(u.id)}" ${checked.has(String(u.id)) ? "checked" : ""}><span>${escapeHtml(u.displayName)}</span></label>`).join("") : '<p class="form-hint">No active teacher accounts yet.</p>';
+}
+function renderAncillary() {
+  const admin = isLpAdmin();
+  const pills = document.querySelector("#anc-pills"), detail = document.querySelector("#anc-detail");
+  if (!ancTasks.length) {
+    pills.innerHTML = ""; detail.innerHTML = emptyFeed(admin ? "No ancillary tasks yet. Use “New ancillary task” above to create one." : "No ancillary tasks have been assigned to you.");
+    document.querySelector("#anc-board-hint").textContent = ""; return;
+  }
+  document.querySelector("#anc-board-hint").textContent = "Select a task to open it.";
+  pills.innerHTML = ancTasks.map(t => {
+    const alerts = t.targets.filter(x => ancInfo(x, t).tone === "overdue").length;
+    return `<button type="button" role="tab" aria-selected="${String(t.id) === ancSelected}" class="lp-subject-pill${String(t.id) === ancSelected ? " is-active" : ""}" data-anc-pill="${t.id}">${escapeHtml(t.title)}${alerts ? `<span class="lp-pill-alert" title="${alerts} overdue">${alerts}</span>` : ""}</button>`;
+  }).join("");
+  const task = ancTasks.find(t => String(t.id) === ancSelected);
+  const files = (task.attachments || []).length ? `<div class="anc-files"><strong>Reference files</strong>${task.attachments.map(f => `<a class="action-link" href="/api/ancillary/attachments/${encodeURIComponent(f.id)}" target="_blank" rel="noopener">📎 ${escapeHtml(f.fileName)} (${ancSize(f.fileSize)})</a>`).join("")}</div>` : "";
+  const head = `<div class="anc-head"><div><h3>${escapeHtml(task.title)}</h3><small>Due ${escapeHtml(lpDateLabel(task.due_date, { weekday: "short", month: "long", day: "numeric", year: "numeric" }))} · ${task.all_teachers ? "All teachers" : `${task.targets.length} teacher${task.targets.length === 1 ? "" : "s"}`}</small></div>${admin ? `<button type="button" class="action-link danger-link" data-anc-delete="${task.id}">Delete task</button>` : ""}</div>${task.description ? `<p class="anc-desc">${escapeHtml(task.description)}</p>` : ""}${files}`;
+  if (admin) {
+    const done = task.targets.filter(x => x.submissionId).length;
+    const rows = task.targets.map(x => {
+      const i = ancInfo(x, task), review = ["Submitted", "Late"].includes(x.status) && x.submissionId;
+      return `<article class="anc-row lp-${i.tone}"><div class="anc-row-head"><strong>${escapeHtml(x.teacherName)}</strong>${ancChip(x, task)}</div>${x.submissionId ? `<p class="lp-meta"><a class="action-link" href="/api/ancillary/submissions/${x.submissionId}/file" target="_blank" rel="noopener">📄 ${escapeHtml(x.fileName)} (${ancSize(x.fileSize)})</a> · ${escapeHtml(formatDate(x.submittedAt))}</p>` : `<p class="lp-note">${i.tone === "overdue" ? "Past the due date; nothing uploaded yet." : "Waiting for upload."}</p>`}${x.feedback ? `<p class="lp-feedback">${escapeHtml(x.feedback)}</p>` : ""}${review ? `<form class="anc-review-form" data-submission="${x.submissionId}"><label class="login-field">Decision<select name="status"><option>Approved</option><option>For Revision</option></select></label><label class="login-field">Feedback (required for revision)<textarea name="feedback" rows="2" maxlength="2000"></textarea></label><button class="button button-primary" type="submit">Save decision</button></form>` : ""}</article>`;
+    }).join("");
+    detail.innerHTML = `${head}<p class="anc-progress"><b>${done}</b> of ${task.targets.length} teachers have submitted</p><div class="anc-rows">${rows}</div>`;
+  } else {
+    const x = task.targets[0], i = ancInfo(x, task);
+    const canUpload = !x.submissionId || x.status === "For Revision";
+    detail.innerHTML = `${head}<div class="anc-mine lp-${i.tone}"><div class="anc-row-head"><strong>Your submission</strong>${ancChip(x, task)}</div>${x.submissionId ? `<p class="lp-meta"><a class="action-link" href="/api/ancillary/submissions/${x.submissionId}/file" target="_blank" rel="noopener">📄 ${escapeHtml(x.fileName)} (${ancSize(x.fileSize)})</a> · ${escapeHtml(formatDate(x.submittedAt))}</p>` : ""}${x.feedback ? `<p class="lp-feedback">${escapeHtml(x.feedback)}</p>` : ""}${canUpload ? `<form class="anc-upload-form" data-task="${task.id}"><label class="login-field">${x.submissionId ? "Upload a revised document" : "Upload your document"} (any file type, max 8 MB)<input type="file" name="file" required></label><button class="button button-primary" type="submit">${x.submissionId ? "Submit revision" : "Submit"}</button></form>` : `<p class="lp-note">${x.status === "Approved" ? "Approved — nothing more to do." : "Under review. You can upload again only if a revision is requested."}</p>`}</div>`;
+  }
+}
+document.querySelector("#view-ancillary").addEventListener("click", async (event) => {
+  const pill = event.target.closest("[data-anc-pill]");
+  if (pill) { ancSelected = String(pill.dataset.ancPill); renderAncillary(); return; }
+  const del = event.target.closest("[data-anc-delete]");
+  if (del) {
+    if (!confirm("Delete this ancillary task and all teacher submissions for it? This cannot be undone.")) return;
+    try { await api(`/api/ancillary/${encodeURIComponent(del.dataset.ancDelete)}`, { method: "DELETE" }); await refreshAncillary(); showToast("Ancillary task deleted."); }
+    catch (e) { setGlobalError(e.message); }
+  }
+});
+document.querySelector("#view-ancillary").addEventListener("change", (event) => {
+  if (event.target.name === "anc-target") document.querySelector("#anc-teacher-picker").hidden = event.target.value !== "selected";
+});
+document.querySelector("#view-ancillary").addEventListener("submit", async (event) => {
+  const form = event.target;
+  event.preventDefault();
+  setGlobalError();
+  try {
+    if (form.id === "anc-form") {
+      const all = form.querySelector('input[name="anc-target"]:checked').value === "all";
+      const teacherIds = [...document.querySelectorAll("#anc-teacher-picker input:checked")].map(i => i.value);
+      if (!all && !teacherIds.length) throw new Error("Select at least one teacher, or choose All teachers.");
+      const picked = [...document.querySelector("#anc-files").files];
+      if (picked.length > 10) throw new Error("Attach no more than 10 files.");
+      if (picked.some(f => f.size > 8 * 1024 * 1024)) throw new Error("Each file must be 8 MB or smaller.");
+      const files = await Promise.all(picked.map(fileToPayload));
+      await api("/api/ancillary", { method: "POST", body: { title: document.querySelector("#anc-title").value, description: document.querySelector("#anc-description").value, dueDate: document.querySelector("#anc-due").value, allTeachers: all, teacherIds, files } });
+      form.reset(); document.querySelector("#anc-teacher-picker").hidden = true; document.querySelector("#anc-compose-details").open = false;
+      ancSelected = null; await refreshAncillary(); showToast("Ancillary task assigned.");
+    } else if (form.classList.contains("anc-upload-form")) {
+      const file = form.querySelector('input[type="file"]').files[0];
+      if (!file) return;
+      if (file.size > 8 * 1024 * 1024) throw new Error("Files must be 8 MB or smaller.");
+      await api(`/api/ancillary/${form.dataset.task}/submit`, { method: "POST", body: { file: await fileToPayload(file) } });
+      await refreshAncillary(); showToast("Document submitted.");
+    } else if (form.classList.contains("anc-review-form")) {
+      const data = new FormData(form);
+      await api(`/api/ancillary/submissions/${form.dataset.submission}/review`, { method: "POST", body: { status: data.get("status"), feedback: data.get("feedback") } });
+      await refreshAncillary(); showToast(data.get("status") === "Approved" ? "Submission approved." : "Revision requested.");
+    }
+  } catch (e) { setGlobalError(e.message); window.scrollTo({ top: 0, behavior: "smooth" }); }
 });
 
 /* ---------- Ergonomics: mobile menu, remembered view, keyboard ---------- */

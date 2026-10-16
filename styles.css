@@ -656,3 +656,30 @@ body { font-size: 15px; line-height: 1.5; }
   .content-wrap { padding: 18px 14px 24px; }
 }
 @media (min-width: 761px) { .sidebar-scrim { display: none !important; } }
+
+/* Ancillary tasks */
+.anc-summary-toggle { display: flex; align-items: center; min-height: 52px; padding: 0 18px; color: #1748e8; font-size: 14px; font-weight: 700; cursor: pointer; list-style: none; }
+.anc-summary-toggle::-webkit-details-marker { display: none; }
+#anc-compose-details[open] .anc-summary-toggle { border-bottom: 1px solid #eef1f5; }
+.anc-label { display: inline-block; padding: 4px 10px; border-radius: 999px; background: #eaf0ff; color: #1748e8; font-size: 11px; font-weight: 800; letter-spacing: 1.2px; }
+.anc-board .lp-subject-pills { padding: 0 18px; }
+.anc-detail { padding: 6px 18px 20px; }
+.anc-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-top: 10px; }
+.anc-head h3 { margin: 0 0 3px; color: #1f3358; font-size: 18px; }
+.anc-head small { color: #7d8a9b; font-size: 13px; }
+.anc-desc { margin: 10px 0 0; color: #55657d; font-size: 14px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.anc-files { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; margin-top: 12px; }
+.anc-progress { margin: 16px 0 8px; color: #55657d; font-size: 13px; }
+.anc-rows { display: grid; gap: 10px; }
+.anc-row, .anc-mine { padding: 14px 16px; border: 1px solid var(--t-line, #e3e8ef); border-left-width: 4px; border-radius: 10px; background: #fff; margin-top: 14px; }
+.anc-rows .anc-row { margin-top: 0; }
+.anc-row-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.anc-row-head strong { color: #334760; font-size: 14px; }
+.anc-row form { margin-top: 10px; padding-top: 10px; border-top: 1px dashed #e3e8ef; }
+.anc-teacher-picker { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 6px 14px; margin: 4px 17px 8px; padding: 12px; border: 1px solid #e3e8ef; border-radius: 10px; background: #fafcff; max-height: 240px; overflow-y: auto; }
+.anc-check { display: flex; align-items: center; gap: 10px; min-height: 40px; font-size: 14px; color: #34475f; cursor: pointer; }
+.anc-check input { width: 20px; height: 20px; accent-color: #1748e8; }
+.lp-subject-pills { flex-wrap: wrap; }
+.lp-subject-pill { min-height: 44px; }
+@media (max-width: 760px) { .anc-head { flex-direction: column; } .anc-detail, .anc-board .lp-subject-pills { padding-left: 14px; padding-right: 14px; } }
+.lp-subject-pill { height: auto; padding: 8px 16px; font-size: 14px; text-align: left; }
