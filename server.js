@@ -8,6 +8,7 @@ import path from "node:path";
 import pg from "pg";
 import { canManageContent, canManageRole, rolesVisibleTo } from "./permissions.js";
 import { analyzePdf, contentFlags } from "./pdf-check.js";
+import { fileStore } from "./file-store.js";
 
 const { Pool } = pg;
 const scrypt = promisify(scryptCallback);
@@ -638,17 +639,18 @@ async function handleAnnouncementRoutes(request, response, url, actor) {
   const imageMatch = url.pathname.match(/^\/api\/announcements\/images\/(\d+)$/);
   if (request.method === "GET" && imageMatch) {
     const result = await pool.query(
-      `SELECT i.mime_type, i.file_data FROM announcement_images i JOIN announcements a ON a.id = i.announcement_id
+      `SELECT i.mime_type, i.file_key, i.file_data FROM announcement_images i JOIN announcements a ON a.id = i.announcement_id
        WHERE i.id = $1 AND (a.expires_at IS NULL OR a.expires_at > NOW())`,
       [imageMatch[1]],
     );
     if (!result.rowCount) throw new HttpError(404, "Photo not found.");
+    const photo = await readStoredFile(result.rows[0].file_key, result.rows[0].file_data);
     response.writeHead(200, {
       "Content-Type": result.rows[0].mime_type,
       "Cache-Control": "private, max-age=3600",
       "X-Content-Type-Options": "nosniff",
     });
-    response.end(result.rows[0].file_data);
+    response.end(photo);
     return true;
   }
 
@@ -662,6 +664,8 @@ async function handleAnnouncementRoutes(request, response, url, actor) {
     const files = Array.isArray(body.images) ? body.images : [];
     if (files.length > 4) throw new HttpError(400, "Attach up to 4 photos.");
     const images = files.map(readImagePayload);
+    const storedImages = [];
+    for (const image of images) storedImages.push(await writeStoredFile("announcements", image.data, image.mime));
     const created = await inTransaction(async (connection) => {
       const result = await connection.query(
         `INSERT INTO announcements (title, body, author_id, author_name, expires_at)
@@ -670,9 +674,9 @@ async function handleAnnouncementRoutes(request, response, url, actor) {
       );
       for (const [index, image] of images.entries()) {
         await connection.query(
-          `INSERT INTO announcement_images (announcement_id, position, file_name, mime_type, file_size, file_data)
-           VALUES ($1, $2, $3, $4, $5, $6)`,
-          [result.rows[0].id, index, image.name, image.mime, image.data.length, image.data],
+          `INSERT INTO announcement_images (announcement_id, position, file_name, mime_type, file_size, file_data, file_key)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+          [result.rows[0].id, index, image.name, image.mime, image.data.length, storedImages[index].data, storedImages[index].key],
         );
       }
       await audit(connection, actor.id, "announcement.created", "announcement", result.rows[0].id);
@@ -1035,11 +1039,13 @@ async function handleLessonPlanRoutes(request, response, url, actor) {
     const flagReason = flags.map((f) => f.message).join(" ").slice(0, 1000);
     const appealNote = flags.length ? String(body.appealNote || "").trim().slice(0, 500) : "";
 
+    // The PDF goes to Storage first; only its key is written to the database inside the transaction.
+    const storedFile = await writeStoredFile("lesson-plans", data, "application/pdf");
     const conn = await pool.connect();
     let status;
     try {
       await conn.query("BEGIN");
-      const current = await conn.query("SELECT id,task_id,teacher_id,file_name,mime_type,file_size,file_data,file_hash,status,admin_feedback,admin_revision_file_name,admin_revision_file_mime,admin_revision_file_size,admin_revision_file_data,submitted_at FROM lesson_plan_uploads WHERE task_id=$1 FOR UPDATE", [taskId]);
+      const current = await conn.query("SELECT id,task_id,teacher_id,file_name,mime_type,file_size,file_data,file_key,file_hash,status,admin_feedback,admin_revision_file_name,admin_revision_file_mime,admin_revision_file_size,admin_revision_file_data,admin_revision_file_key,submitted_at FROM lesson_plan_uploads WHERE task_id=$1 FOR UPDATE", [taskId]);
       assertCanUpload(current.rows[0]);
       // Keeping the original passing date only applies to the first upload after an admin deletion.
       const keepDate = !current.rowCount && taskRow.original_submitted_at;
@@ -1051,13 +1057,13 @@ async function handleLessonPlanRoutes(request, response, url, actor) {
         const count = await conn.query("SELECT COALESCE(MAX(version_number),0)::int AS n FROM lesson_plan_upload_versions WHERE task_id=$1", [taskId]);
         const version = count.rows[0].n + 1;
         const old = current.rows[0];
-        await conn.query(`INSERT INTO lesson_plan_upload_versions(task_id,teacher_id,file_name,mime_type,file_size,file_data,file_hash,status,admin_feedback,admin_revision_file_name,admin_revision_file_mime,admin_revision_file_size,admin_revision_file_data,submitted_at,version_number)
-          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`, [old.task_id,old.teacher_id,old.file_name,old.mime_type,old.file_size,old.file_data,old.file_hash,old.status,old.admin_feedback,old.admin_revision_file_name,old.admin_revision_file_mime,old.admin_revision_file_size,old.admin_revision_file_data,old.submitted_at,version]);
-        await conn.query(`UPDATE lesson_plan_uploads SET file_name=$1,mime_type='application/pdf',file_size=$2,file_data=$3,file_hash=$4,status=$5,admin_feedback='',admin_revision_file_name='',admin_revision_file_size=0,admin_revision_file_data=NULL,submitted_at=NOW(),reviewed_by=NULL,reviewed_at=NULL,flag_codes=$6,flag_reason=$7,appeal_note=$8 WHERE task_id=$9`,
-          [fileName,data.length,data,hash,status,flagCodes,flagReason,appealNote,taskId]);
+        await conn.query(`INSERT INTO lesson_plan_upload_versions(task_id,teacher_id,file_name,mime_type,file_size,file_data,file_hash,status,admin_feedback,admin_revision_file_name,admin_revision_file_mime,admin_revision_file_size,admin_revision_file_data,submitted_at,version_number,file_key,admin_revision_file_key)
+          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`, [old.task_id,old.teacher_id,old.file_name,old.mime_type,old.file_size,old.file_data,old.file_hash,old.status,old.admin_feedback,old.admin_revision_file_name,old.admin_revision_file_mime,old.admin_revision_file_size,old.admin_revision_file_data,old.submitted_at,version,old.file_key,old.admin_revision_file_key]);
+        await conn.query(`UPDATE lesson_plan_uploads SET file_name=$1,mime_type='application/pdf',file_size=$2,file_data=$3,file_key=$10,file_hash=$4,status=$5,admin_feedback='',admin_revision_file_name='',admin_revision_file_size=0,admin_revision_file_data=NULL,admin_revision_file_key=NULL,submitted_at=NOW(),reviewed_by=NULL,reviewed_at=NULL,flag_codes=$6,flag_reason=$7,appeal_note=$8 WHERE task_id=$9`,
+          [fileName,data.length,storedFile.data,hash,status,flagCodes,flagReason,appealNote,taskId,storedFile.key]);
       } else {
-        await conn.query(`INSERT INTO lesson_plan_uploads(task_id,teacher_id,file_name,mime_type,file_size,file_data,file_hash,status,admin_feedback,submitted_at,reviewed_by,reviewed_at,flag_codes,flag_reason,appeal_note)
-          VALUES($1,$2,$3,'application/pdf',$4,$5,$6,$7,'',$8,NULL,NULL,$9,$10,$11)`, [taskId,actor.id,fileName,data.length,data,hash,status,submittedAt,flagCodes,flagReason,appealNote]);
+        await conn.query(`INSERT INTO lesson_plan_uploads(task_id,teacher_id,file_name,mime_type,file_size,file_data,file_hash,status,admin_feedback,submitted_at,reviewed_by,reviewed_at,flag_codes,flag_reason,appeal_note,file_key)
+          VALUES($1,$2,$3,'application/pdf',$4,$5,$6,$7,'',$8,NULL,NULL,$9,$10,$11,$12)`, [taskId,actor.id,fileName,data.length,storedFile.data,hash,status,submittedAt,flagCodes,flagReason,appealNote,storedFile.key]);
         await conn.query("DELETE FROM lesson_plan_retained_dates WHERE task_id=$1", [taskId]);
       }
       await audit(conn, actor.id, resubmit ? "lessonplan.resubmitted" : "lessonplan.uploaded", "lesson_plan_task", taskId);
@@ -1075,30 +1081,27 @@ async function handleLessonPlanRoutes(request, response, url, actor) {
   }
   const versionFileMatch = url.pathname.match(/^\/api\/lesson-plans\/versions\/(\d+)\/file$/);
   if (versionFileMatch && request.method === "GET") {
-    const result = await pool.query("SELECT teacher_id,file_name,mime_type,file_data FROM lesson_plan_upload_versions WHERE id=$1", [versionFileMatch[1]]);
+    const result = await pool.query("SELECT teacher_id,file_name,mime_type,file_key,file_data FROM lesson_plan_upload_versions WHERE id=$1", [versionFileMatch[1]]);
     if (!result.rowCount) throw new HttpError(404, "Revision file not found.");
     if (!admin.includes(actor.role) && Number(result.rows[0].teacher_id) !== Number(actor.id)) throw new HttpError(403, "You cannot access this revision file.");
     const file = result.rows[0];
-    response.writeHead(200,{"Content-Type":file.mime_type,"Content-Disposition":`attachment; filename*=UTF-8''${encodeURIComponent(file.file_name)}`,"Cache-Control":"no-store","X-Content-Type-Options":"nosniff"});
-    response.end(file.file_data); return true;
+    sendStoredFile(response,url,{name:file.file_name,mime:file.mime_type,data:await readStoredFile(file.file_key,file.file_data)}); return true;
   }
   const fileMatch = url.pathname.match(/^\/api\/lesson-plans\/uploads\/(\d+)\/file$/);
   if (fileMatch && request.method === "GET") {
-    const result = await pool.query("SELECT teacher_id,file_name,mime_type,file_data FROM lesson_plan_uploads WHERE id=$1",[fileMatch[1]]);
+    const result = await pool.query("SELECT teacher_id,file_name,mime_type,file_key,file_data FROM lesson_plan_uploads WHERE id=$1",[fileMatch[1]]);
     if (!result.rowCount) throw new HttpError(404,"File not found.");
     if (!admin.includes(actor.role) && Number(result.rows[0].teacher_id)!==Number(actor.id)) throw new HttpError(403,"You cannot access this file.");
     const f=result.rows[0];
-    response.writeHead(200,{"Content-Type":f.mime_type,"Content-Disposition":`attachment; filename*=UTF-8''${encodeURIComponent(f.file_name)}`,"Cache-Control":"no-store","X-Content-Type-Options":"nosniff"});
-    response.end(f.file_data); return true;
+    sendStoredFile(response,url,{name:f.file_name,mime:f.mime_type,data:await readStoredFile(f.file_key,f.file_data)}); return true;
   }
   const revisionFileMatch = url.pathname.match(/^\/api\/lesson-plans\/uploads\/(\d+)\/revision-file$/);
   if (revisionFileMatch && request.method === "GET") {
-    const result = await pool.query("SELECT x.teacher_id,x.admin_revision_file_name,x.admin_revision_file_mime,x.admin_revision_file_data FROM lesson_plan_uploads x WHERE x.id=$1", [revisionFileMatch[1]]);
-    if (!result.rowCount || !result.rows[0].admin_revision_file_data) throw new HttpError(404,"Revision PDF not found.");
+    const result = await pool.query("SELECT x.teacher_id,x.admin_revision_file_name,x.admin_revision_file_mime,x.admin_revision_file_key,x.admin_revision_file_data FROM lesson_plan_uploads x WHERE x.id=$1", [revisionFileMatch[1]]);
+    if (!result.rowCount || !(result.rows[0].admin_revision_file_key || result.rows[0].admin_revision_file_data)) throw new HttpError(404,"Revision PDF not found.");
     if (!admin.includes(actor.role) && Number(result.rows[0].teacher_id)!==Number(actor.id)) throw new HttpError(403,"You cannot access this revision document.");
     const f=result.rows[0];
-    response.writeHead(200,{"Content-Type":f.admin_revision_file_mime,"Content-Disposition":`attachment; filename*=UTF-8''${encodeURIComponent(f.admin_revision_file_name)}`,"Cache-Control":"no-store","X-Content-Type-Options":"nosniff"});
-    response.end(f.admin_revision_file_data); return true;
+    sendStoredFile(response,url,{name:f.admin_revision_file_name,mime:f.admin_revision_file_mime,data:await readStoredFile(f.admin_revision_file_key,f.admin_revision_file_data)}); return true;
   }
 
   const deleteUploadMatch = url.pathname.match(/^\/api\/lesson-plans\/uploads\/(\d+)$/);
@@ -1170,8 +1173,9 @@ async function handleLessonPlanRoutes(request, response, url, actor) {
     const current=await pool.query("SELECT status FROM lesson_plan_uploads WHERE id=$1",[reviewMatch[1]]);
     if (!current.rowCount) throw new HttpError(404,"Lesson-plan submission not found.");
     if (!["Submitted","Late"].includes(current.rows[0].status)) throw new HttpError(409,"Only submissions awaiting review can be reviewed. A revised submission must be uploaded before it can be approved.");
-    await pool.query("UPDATE lesson_plan_uploads SET status=$1,admin_feedback=$2,admin_revision_file_name=$3,admin_revision_file_mime='application/pdf',admin_revision_file_size=$4,admin_revision_file_data=$5,reviewed_by=$6,reviewed_at=NOW() WHERE id=$7",
-      [status,feedback,revisionFileName,revisionFileData?.length||0,revisionFileData,actor.id,reviewMatch[1]]);
+    const storedRevision = revisionFileData ? await writeStoredFile("lesson-plan-revisions", revisionFileData, "application/pdf") : { key: null, data: null };
+    await pool.query("UPDATE lesson_plan_uploads SET status=$1,admin_feedback=$2,admin_revision_file_name=$3,admin_revision_file_mime='application/pdf',admin_revision_file_size=$4,admin_revision_file_data=$5,admin_revision_file_key=$8,reviewed_by=$6,reviewed_at=NOW() WHERE id=$7",
+      [status,feedback,revisionFileName,revisionFileData?.length||0,storedRevision.data,actor.id,reviewMatch[1],storedRevision.key]);
     sendJson(response,200,{ok:true}); return true;
   }
   return false;
@@ -1185,9 +1189,54 @@ function readFilePayload(file) {
   return { name: path.basename(file.name).slice(0, 255), mime: String(file.type || "application/octet-stream").slice(0, 150), data };
 }
 
-function sendDownload(response, file) {
-  response.writeHead(200, { "Content-Type": file.mime_type, "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(file.file_name)}`, "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store" });
-  response.end(file.file_data);
+// Files are kept in private Supabase Storage (see file-store.js). These helpers translate storage
+// problems into the portal's normal HTTP errors.
+async function readStoredFile(key, legacyData) {
+  try {
+    const data = await fileStore.load(key, legacyData);
+    if (!data || !data.length) throw new HttpError(404, "File not found.");
+    return data;
+  } catch (error) {
+    if (error instanceof HttpError) throw error;
+    if (error?.name === "StorageError") {
+      console.error("Storage read failed:", error.message);
+      if (error.status === 404) throw new HttpError(404, "The stored file could not be found.");
+      throw new HttpError(502, "File storage is temporarily unavailable. Please try again.");
+    }
+    throw error;
+  }
+}
+
+async function writeStoredFile(kind, data, mime) {
+  try {
+    return await fileStore.save(kind, data, mime);
+  } catch (error) {
+    if (error?.name === "StorageError") {
+      console.error("Storage write failed:", error.message);
+      throw new HttpError(502, "The file could not be saved. Please try again in a moment.");
+    }
+    throw error;
+  }
+}
+
+// PDFs open inside the browser (and the portal's built-in viewer); ?download=1 forces a download.
+// Anything that is not a real PDF is always sent as a download so it can never run in the portal's origin.
+function sendStoredFile(response, url, { name, mime, data }) {
+  const isPdf = data.length > 5 && data.subarray(0, 5).toString("ascii") === "%PDF-";
+  const inline = isPdf && url.searchParams.get("download") !== "1";
+  const headers = {
+    "Content-Type": isPdf ? "application/pdf" : (mime || "application/octet-stream"),
+    "Content-Disposition": `${inline ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(name || "file")}`,
+    "Content-Length": data.length,
+    "Cache-Control": "private, no-store",
+    "X-Content-Type-Options": "nosniff",
+  };
+  if (inline) {
+    headers["X-Frame-Options"] = "SAMEORIGIN";
+    headers["Content-Security-Policy"] = "frame-ancestors 'self'";
+  }
+  response.writeHead(200, headers);
+  response.end(data);
 }
 
 async function handleAncillaryRoutes(request, response, url, actor) {
@@ -1226,12 +1275,14 @@ async function handleAncillaryRoutes(request, response, url, actor) {
     const files = Array.isArray(body.files) ? body.files : [];
     if (files.length > 10) throw new HttpError(400, "Attach up to 10 files.");
     const parsed = files.map(readFilePayload);
+    const storedAttachments = [];
+    for (const f of parsed) storedAttachments.push(await writeStoredFile("ancillary-attachments", f.data, f.mime));
     let created;
     await inTransaction(async (connection) => {
       const r = await connection.query("INSERT INTO ancillary_tasks(title,description,due_date,all_teachers,created_by) VALUES($1,$2,$3::date,$4,$5) RETURNING id", [title, description, dueDate, allTeachers, actor.id]);
       created = r.rows[0];
       if (!allTeachers) for (const id of teacherIds) await connection.query("INSERT INTO ancillary_task_teachers(task_id,teacher_id) VALUES($1,$2)", [created.id, id]);
-      for (const f of parsed) await connection.query("INSERT INTO ancillary_attachments(task_id,file_name,mime_type,file_size,file_data) VALUES($1,$2,$3,$4,$5)", [created.id, f.name, f.mime, f.data.length, f.data]);
+      for (const [index, f] of parsed.entries()) await connection.query("INSERT INTO ancillary_attachments(task_id,file_name,mime_type,file_size,file_data,file_key) VALUES($1,$2,$3,$4,$5,$6)", [created.id, f.name, f.mime, f.data.length, storedAttachments[index].data, storedAttachments[index].key]);
       await audit(connection, actor.id, "ancillary.created", "ancillary_task", created.id);
     });
     sendJson(response, 201, { ok: true, id: created.id }); return true;
@@ -1255,15 +1306,16 @@ async function handleAncillaryRoutes(request, response, url, actor) {
       AND (t.all_teachers OR EXISTS (SELECT 1 FROM ancillary_task_teachers a WHERE a.task_id=t.id AND a.teacher_id=$2))`, [submitMatch[1], actor.id]);
     if (!task.rowCount) throw new HttpError(404, "This ancillary task is not assigned to you.");
     const status = task.rows[0].is_late ? "Late" : "Submitted";
+    const storedSubmission = await writeStoredFile("ancillary-submissions", file.data, file.mime);
     await inTransaction(async (connection) => {
       const current = await connection.query("SELECT status FROM ancillary_submissions WHERE task_id=$1 AND teacher_id=$2 FOR UPDATE", [submitMatch[1], actor.id]);
       if (current.rowCount) {
         if (current.rows[0].status !== "For Revision") throw new HttpError(409, current.rows[0].status === "Approved" ? "This submission has already been approved." : "Your submission is awaiting review. You can upload a replacement only if a revision is requested.");
-        await connection.query(`UPDATE ancillary_submissions SET file_name=$1,mime_type=$2,file_size=$3,file_data=$4,status=$5,admin_feedback='',submitted_at=NOW(),reviewed_by=NULL,reviewed_at=NULL WHERE task_id=$6 AND teacher_id=$7`,
-          [file.name, file.mime, file.data.length, file.data, status, submitMatch[1], actor.id]);
+        await connection.query(`UPDATE ancillary_submissions SET file_name=$1,mime_type=$2,file_size=$3,file_data=$4,file_key=$8,status=$5,admin_feedback='',submitted_at=NOW(),reviewed_by=NULL,reviewed_at=NULL WHERE task_id=$6 AND teacher_id=$7`,
+          [file.name, file.mime, file.data.length, storedSubmission.data, status, submitMatch[1], actor.id, storedSubmission.key]);
       } else {
-        await connection.query("INSERT INTO ancillary_submissions(task_id,teacher_id,file_name,mime_type,file_size,file_data,status) VALUES($1,$2,$3,$4,$5,$6,$7)",
-          [submitMatch[1], actor.id, file.name, file.mime, file.data.length, file.data, status]);
+        await connection.query("INSERT INTO ancillary_submissions(task_id,teacher_id,file_name,mime_type,file_size,file_data,status,file_key) VALUES($1,$2,$3,$4,$5,$6,$7,$8)",
+          [submitMatch[1], actor.id, file.name, file.mime, file.data.length, storedSubmission.data, status, storedSubmission.key]);
       }
     });
     sendJson(response, 201, { ok: true, status }); return true;
@@ -1283,21 +1335,21 @@ async function handleAncillaryRoutes(request, response, url, actor) {
 
   const subFile = url.pathname.match(/^\/api\/ancillary\/submissions\/(\d+)\/file$/);
   if (subFile && request.method === "GET") {
-    const r = await pool.query("SELECT teacher_id,file_name,mime_type,file_data FROM ancillary_submissions WHERE id=$1", [subFile[1]]);
+    const r = await pool.query("SELECT teacher_id,file_name,mime_type,file_key,file_data FROM ancillary_submissions WHERE id=$1", [subFile[1]]);
     if (!r.rowCount) throw new HttpError(404, "File not found.");
     if (!isAdmin && String(r.rows[0].teacher_id) !== String(actor.id)) throw new HttpError(403, "You cannot access this file.");
-    sendDownload(response, r.rows[0]); return true;
+    sendStoredFile(response, url, { name: r.rows[0].file_name, mime: r.rows[0].mime_type, data: await readStoredFile(r.rows[0].file_key, r.rows[0].file_data) }); return true;
   }
 
   const attFile = url.pathname.match(/^\/api\/ancillary\/attachments\/(\d+)$/);
   if (attFile && request.method === "GET") {
-    const r = await pool.query(`SELECT a.file_name,a.mime_type,a.file_data,a.task_id,t.all_teachers FROM ancillary_attachments a JOIN ancillary_tasks t ON t.id=a.task_id WHERE a.id=$1`, [attFile[1]]);
+    const r = await pool.query(`SELECT a.file_name,a.mime_type,a.file_key,a.file_data,a.task_id,t.all_teachers FROM ancillary_attachments a JOIN ancillary_tasks t ON t.id=a.task_id WHERE a.id=$1`, [attFile[1]]);
     if (!r.rowCount) throw new HttpError(404, "Attachment not found.");
     if (!isAdmin && !r.rows[0].all_teachers) {
       const ok = await pool.query("SELECT 1 FROM ancillary_task_teachers WHERE task_id=$1 AND teacher_id=$2", [r.rows[0].task_id, actor.id]);
       if (!ok.rowCount) throw new HttpError(403, "You cannot access this attachment.");
     }
-    sendDownload(response, r.rows[0]); return true;
+    sendStoredFile(response, url, { name: r.rows[0].file_name, mime: r.rows[0].mime_type, data: await readStoredFile(r.rows[0].file_key, r.rows[0].file_data) }); return true;
   }
   return false;
 }
@@ -1329,11 +1381,12 @@ async function handleMemoRoutes(request, response, url, actor) {
     const data = Buffer.from(body.file.data, "base64");
     if (!data.length || data.length > 8 * 1024 * 1024) throw new HttpError(413, "Memo PDFs must be no larger than 8 MB.");
     if (data.subarray(0, 5).toString("ascii") !== "%PDF-") throw new HttpError(400, "The uploaded file does not appear to be a valid PDF.");
+    const storedMemo = await writeStoredFile("memos", data, "application/pdf");
     const created = await inTransaction(async (connection) => {
       const result = await connection.query(
-        `INSERT INTO memos (title, description, file_name, file_size, file_data, uploaded_by, uploader_name)
-         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
-        [title, description, fileName, data.length, data, actor.id, actor.display_name],
+        `INSERT INTO memos (title, description, file_name, file_size, file_data, file_key, uploaded_by, uploader_name)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
+        [title, description, fileName, data.length, storedMemo.data, storedMemo.key, actor.id, actor.display_name],
       );
       await audit(connection, actor.id, "memo.created", "memo", result.rows[0].id);
       return result.rows[0];
@@ -1343,15 +1396,9 @@ async function handleMemoRoutes(request, response, url, actor) {
   }
   const fileMatch = url.pathname.match(/^\/api\/memos\/(\d+)\/file$/);
   if (fileMatch && request.method === "GET") {
-    const result = await pool.query("SELECT file_name, file_data FROM memos WHERE id = $1", [fileMatch[1]]);
+    const result = await pool.query("SELECT file_name, file_key, file_data FROM memos WHERE id = $1", [fileMatch[1]]);
     if (!result.rowCount) throw new HttpError(404, "Memo not found.");
-    response.writeHead(200, {
-      "Content-Type": "application/pdf",
-      "Content-Disposition": `inline; filename*=UTF-8''${encodeURIComponent(result.rows[0].file_name)}`,
-      "Cache-Control": "private, no-store",
-      "X-Content-Type-Options": "nosniff",
-    });
-    response.end(result.rows[0].file_data);
+    sendStoredFile(response, url, { name: result.rows[0].file_name, mime: "application/pdf", data: await readStoredFile(result.rows[0].file_key, result.rows[0].file_data) });
     return true;
   }
   const deleteMatch = url.pathname.match(/^\/api\/memos\/(\d+)$/);
@@ -1730,6 +1777,14 @@ async function handleRequest(request, response) {
 
 async function start() {
   await pool.query("SELECT 1");
+  if (fileStore.enabled) {
+    // Creates the private bucket if it is missing and proves the Supabase key works before serving traffic.
+    await fileStore.init();
+  } else if (isProduction) {
+    throw new Error("SUPABASE_URL and SUPABASE_SECRET_KEY are required in production so uploads go to Supabase Storage instead of the database.");
+  } else {
+    console.warn("Supabase Storage is not configured: uploads stay in the database (development only).");
+  }
   const schema = await readFile(path.join(root, "schema.sql"), "utf8");
   await pool.query(schema);
   await bootstrapDevelopers();
@@ -1754,6 +1809,15 @@ async function start() {
   server.listen(port, "0.0.0.0", () => {
     console.log(`Nag-iba School Portal listening on port ${port}.`);
   });
+  if (fileStore.enabled) {
+    // Move any files still stored in the database into Storage (verified copy first), then remove
+    // stored files that no longer belong to any record. Set MIGRATE_LEGACY_FILES=false to skip the move.
+    (async () => {
+      if (process.env.MIGRATE_LEGACY_FILES !== "false") await fileStore.migrateLegacyFiles({ pool });
+      await fileStore.sweepOrphans({ pool });
+    })().catch((error) => console.error("Background file maintenance failed:", error.message));
+    setInterval(() => fileStore.sweepOrphans({ pool }).catch((error) => console.error("Storage cleanup failed:", error.message)), 6 * 60 * 60 * 1000).unref();
+  }
   const shutdown = () => {
     server.close(() => {
       pool.end().then(() => process.exit(0)).catch((error) => {

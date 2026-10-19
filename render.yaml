@@ -16,3 +16,7 @@ services:
         sync: false
       - key: BOOTSTRAP_DEVELOPERS
         sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SECRET_KEY
+        sync: false

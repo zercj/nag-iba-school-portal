@@ -365,3 +365,21 @@ CREATE TABLE IF NOT EXISTS attendance_records (
   UNIQUE (teacher_id, attendance_date)
 );
 CREATE INDEX IF NOT EXISTS attendance_date_idx ON attendance_records (attendance_date);
+
+-- Uploaded files now live in a private Supabase Storage bucket. Rows keep only the storage key;
+-- the old BYTEA columns stay (nullable) so existing rows keep working until they are moved.
+ALTER TABLE lesson_plan_uploads ADD COLUMN IF NOT EXISTS file_key TEXT;
+ALTER TABLE lesson_plan_uploads ADD COLUMN IF NOT EXISTS admin_revision_file_key TEXT;
+ALTER TABLE lesson_plan_upload_versions ADD COLUMN IF NOT EXISTS file_key TEXT;
+ALTER TABLE lesson_plan_upload_versions ADD COLUMN IF NOT EXISTS admin_revision_file_key TEXT;
+ALTER TABLE memos ADD COLUMN IF NOT EXISTS file_key TEXT;
+ALTER TABLE announcement_images ADD COLUMN IF NOT EXISTS file_key TEXT;
+ALTER TABLE ancillary_attachments ADD COLUMN IF NOT EXISTS file_key TEXT;
+ALTER TABLE ancillary_submissions ADD COLUMN IF NOT EXISTS file_key TEXT;
+ALTER TABLE lesson_plan_uploads ALTER COLUMN file_data DROP NOT NULL;
+ALTER TABLE lesson_plan_upload_versions ALTER COLUMN file_data DROP NOT NULL;
+ALTER TABLE memos ALTER COLUMN file_data DROP NOT NULL;
+ALTER TABLE announcement_images ALTER COLUMN file_data DROP NOT NULL;
+ALTER TABLE ancillary_attachments ALTER COLUMN file_data DROP NOT NULL;
+ALTER TABLE ancillary_submissions ALTER COLUMN file_data DROP NOT NULL;
+ALTER TABLE task_attachments ALTER COLUMN file_data DROP NOT NULL;

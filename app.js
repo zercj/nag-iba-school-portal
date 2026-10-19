@@ -499,11 +499,11 @@ function renderLessonPlanTasks() {
 function lpTaskControls(t, admin){
   const submitted=!!t.upload_id;
   const state=String(t.status||"").toLowerCase();
-  const revisionLink=t.admin_revision_file_name?`<a class="action-link" href="/api/lesson-plans/uploads/${t.upload_id}/revision-file" target="_blank" rel="noopener">Attached PDF from the administrator: ${escapeHtml(t.admin_revision_file_name)}</a>`:"";
+  const revisionLink=t.admin_revision_file_name?`<button type="button" class="action-link" data-view-file="/api/lesson-plans/uploads/${t.upload_id}/revision-file" data-view-title="${escapeHtml(t.admin_revision_file_name)}">Attached PDF from the administrator: ${escapeHtml(t.admin_revision_file_name)}</button>`:"";
   const feedback=t.admin_feedback?`<p class="lp-feedback"><strong>Administrator's comment:</strong> ${escapeHtml(t.admin_feedback)}</p>`:"";
   const history=Number(t.revision_count)>0?`<details><summary>View previous revisions (${t.revision_count})</summary><div class="lp-history" data-history-task="${t.id}">Loading revision history…</div></details>`:"";
   const subInfo=submitted?`<p class="lp-meta">Passed ${formatDate(t.submitted_at)}${t.submitted_late?" · after the due date":""}${Number(t.revision_count)>0?` · ${t.revision_count} earlier revision(s)`:""}</p>`:"";
-  const pdfLink=submitted?`<a class="action-link lp-pdf-link" href="/api/lesson-plans/uploads/${t.upload_id}/file" target="_blank" rel="noopener">Open PDF: ${escapeHtml(t.file_name)}</a>`:"";
+  const pdfLink=submitted?`<div class="lp-pdf-row"><button type="button" class="button button-primary lp-view-pdf" data-view-file="/api/lesson-plans/uploads/${t.upload_id}/file" data-view-title="${escapeHtml(t.file_name)}">View lesson plan</button><a class="action-link" href="/api/lesson-plans/uploads/${t.upload_id}/file?download=1">Download</a><small class="lp-pdf-name">${escapeHtml(t.file_name)}</small></div>`:"";
   const flagBanner=lpFlagged(t)?`<div class="lp-flag-banner" role="note">${LP_TRI}<div><strong>${admin?"Needs a closer look":"Submitted with a warning"}</strong><p>${escapeHtml(t.flag_reason||"This upload was flagged.")}</p>${t.appeal_note?`<p><em>${admin?"Teacher's note":"Your note"}:</em> ${escapeHtml(t.appeal_note)}</p>`:""}<small>${admin?"The warning clears when you approve this lesson plan.":"The warning clears once the administrator approves it."}</small></div></div>`:"";
   const retained=(!submitted&&t.retained_submitted_at)?`<p class="lp-note">${admin?"Submission deleted. The teacher keeps the original passing date":"An administrator removed your earlier submission. Your original passing date"} (${escapeHtml(formatDate(t.retained_submitted_at))}) ${admin?"and must upload again.":"is kept. Please upload again."}</p>`:"";
   if(admin){
@@ -544,7 +544,7 @@ function lpLoadHistory(root){
   root.querySelectorAll("[data-history-task]").forEach(wrap=>{
     if(wrap.dataset.loaded) return; wrap.dataset.loaded="1";
     api(`/api/lesson-plans/tasks/${wrap.dataset.historyTask}/history`).then(result=>{
-      wrap.innerHTML=result.versions.length ? result.versions.map(v=>`<p><a class="action-link" href="/api/lesson-plans/versions/${v.id}/file" target="_blank" rel="noopener">Revision ${v.version_number}: ${escapeHtml(v.file_name)}</a> · ${escapeHtml(v.status)} · ${formatDate(v.submitted_at)}${v.admin_feedback?`<br>Feedback: ${escapeHtml(v.admin_feedback)}`:""}</p>`).join("") : "No previous revisions.";
+      wrap.innerHTML=result.versions.length ? result.versions.map(v=>`<p><button type="button" class="action-link" data-view-file="/api/lesson-plans/versions/${v.id}/file" data-view-title="${escapeHtml(v.file_name)}">Revision ${v.version_number}: ${escapeHtml(v.file_name)}</button> · ${escapeHtml(v.status)} · ${formatDate(v.submitted_at)}${v.admin_feedback?`<br>Feedback: ${escapeHtml(v.admin_feedback)}`:""}</p>`).join("") : "No previous revisions.";
     }).catch(()=>{wrap.textContent="Revision history could not be loaded.";});
   });
 }
@@ -1354,4 +1354,22 @@ if (isStaticHost) {
 document.addEventListener("DOMContentLoaded", restoreSession);
 
 document.querySelector("#photo-dialog-close").addEventListener("click", () => document.querySelector("#photo-dialog").close());
+
+/* ---------- In-page PDF viewer: lets administrators read a lesson plan without downloading it ---------- */
+function openPdfViewer(url, title) {
+  const dialog = document.querySelector("#pdf-viewer-dialog");
+  document.querySelector("#pdf-viewer-title").textContent = title || "Document";
+  document.querySelector("#pdf-viewer-open").href = url;
+  document.querySelector("#pdf-viewer-download").href = `${url}${url.includes("?") ? "&" : "?"}download=1`;
+  document.querySelector("#pdf-viewer-frame").src = url;
+  if (!dialog.open) dialog.showModal();
+}
+document.addEventListener("click", (event) => {
+  const trigger = event.target.closest("[data-view-file]");
+  if (!trigger) return;
+  event.preventDefault();
+  openPdfViewer(trigger.dataset.viewFile, trigger.dataset.viewTitle);
+});
+document.querySelector("#pdf-viewer-close").addEventListener("click", () => document.querySelector("#pdf-viewer-dialog").close());
+document.querySelector("#pdf-viewer-dialog").addEventListener("close", () => { document.querySelector("#pdf-viewer-frame").src = "about:blank"; });
 document.querySelector("#photo-dialog").addEventListener("click", (event) => { if (event.target === event.currentTarget) event.currentTarget.close(); });

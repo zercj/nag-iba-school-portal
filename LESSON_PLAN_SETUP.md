@@ -13,7 +13,7 @@ This build adds an initial three-term lesson-plan workflow to the existing porta
 The portal initializes new tables from `schema.sql` during server startup. Back up the production database before deploying any schema changes. Existing portal tables and data are preserved; new tasks are only generated when an admin presses the generate button.
 
 ## Important limitations
-- Uploads are stored in PostgreSQL as binary data, with an 8 MB per-file limit. For a large school deployment, object storage (for example, OneDrive or S3-compatible storage) is preferable.
+- Uploads are stored in a private Supabase Storage bucket (see `SUPABASE_STORAGE.md`), with an 8 MB per-file limit. The database keeps only each file's storage key.
 - Regenerating a term creates any missing task slots but does not alter existing tasks or submissions. If term settings are changed after tasks have been generated, the existing due dates are intentionally retained.
 - The task generator skips weekends for 5-day schedules, skips Sundays for 6-day schedules, and uses all days for 7-day schedules.
 - Existing subjects must be created before the admin can assign them to teachers.

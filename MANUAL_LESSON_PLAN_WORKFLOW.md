@@ -25,4 +25,4 @@ The application runs `schema.sql` at server startup. This update adds a revision
 ## Important behavior
 - The generated daily dates start from the date entered by the admin. For 5 or fewer days per week, generated dates skip Saturdays and Sundays; 6-day schedules skip Sundays; 7-day schedules include every day.
 - The calendar is generated only for the selected term and teacher-subject pair.
-- PDF files are stored in PostgreSQL; keep an eye on database storage limits.
+- PDF files are stored in Supabase Storage (1 GB on the free plan); the database only keeps their keys. Administrators can read a lesson plan in the in-page viewer without downloading it.

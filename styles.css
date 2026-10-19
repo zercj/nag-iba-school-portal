@@ -874,3 +874,11 @@ body { font-size: 15px; line-height: 1.5; }
 .subject-chip button { padding: 0; border: 0; background: none; color: #b42318; font-size: 15px; line-height: 1; }
 .subject-add-form { display: flex; flex-wrap: wrap; gap: 8px; }
 .subject-add-form input { flex: 1; min-width: 200px; height: 36px; padding: 0 11px; border: 1px solid #e3e8ef; border-radius: 6px; font-size: 12px; }
+
+/* In-page PDF viewer */
+.pdf-viewer-dialog { width: min(1000px, calc(100vw - 24px)); height: calc(100vh - 32px); }
+.pdf-viewer-dialog[open] { display: flex; flex-direction: column; }
+.pdf-viewer-frame { flex: 1; width: 100%; min-height: 0; border: 0; background: #eef2f8; }
+.pdf-viewer-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; padding: 10px 16px; border-top: 1px solid var(--line); }
+.lp-pdf-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.lp-pdf-name { color: #5b6b85; overflow-wrap: anywhere; }
