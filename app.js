@@ -1060,7 +1060,7 @@ document.querySelector("#lp-assignment-list").addEventListener("submit",async(ev
   // Days are saved in the same request as the teacher/subject, so one click either saves everything or nothing.
   if(picker&&days.join(",")!==picker.dataset.orig){ body.termNumber=Number(lpTerm()); body.weekdays=days; }
   submit.disabled=true;
-  try{ await api(`/api/lesson-plans/assignments/${form.dataset.lpEdit}`,{method:"PUT",body}); await refreshLessonPlans(); await refreshLpNotifications(); showToast("Schedule saved."); }
+  try{ await api(`/api/lesson-plans/assignments/${form.dataset.lpEditForm}`,{method:"PUT",body}); await refreshLessonPlans(); await refreshLpNotifications(); showToast("Schedule saved."); }
   catch(e){ fail(e.message); } finally { submit.disabled=false; }
 });
 document.querySelector("#view-lesson-plans").addEventListener("click",async(event)=>{const button=event.target.closest(".lp-confirm-approval");if(!button)return;if(!confirm("Confirm that you have received the administrator's approval? This will mark the lesson plan as completed."))return;try{await api(`/api/lesson-plans/uploads/${button.dataset.uploadId}/confirm`,{method:"POST",body:{}});await refreshLessonPlans();await refreshLpNotifications();showToast("Approval confirmed. Lesson plan completed.");}catch(e){setGlobalError(e.message);}});
