@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "node --env-file-if-exists=.env server.js",
-    "check": "node --check server.js && node --check app.js && node --check permissions.js",
+    "check": "node --check server.js && node --check app.js && node --check features.js && node --check pdf-check.js && node --check permissions.js",
     "test": "node --test"
   },
   "engines": {

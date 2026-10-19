@@ -7,6 +7,7 @@
     <title>Nag-iba National High School | School Portal</title>
     <link rel="stylesheet" href="styles.css" />
     <script src="app.js" defer></script>
+    <script src="features.js" defer></script>
   </head>
   <body>
     <a class="skip-link" href="#main-content">Skip to main content</a>
@@ -56,9 +57,13 @@
           <button class="nav-link" type="button" data-view="users" id="users-nav"><span class="nav-icon" aria-hidden="true">♙</span><span id="users-nav-label">Accounts</span></button>
           <button class="nav-link" type="button" data-view="messages"><span class="nav-icon" aria-hidden="true">✉</span>Messages<span class="nav-count" id="unread-count" hidden></span></button>
           <button class="nav-link" type="button" data-view="announcements"><span class="nav-icon" aria-hidden="true">◷</span>Announcements</button>
+          <button class="nav-link" type="button" data-view="create-announcement" data-roles="developer,admin,teacher" hidden><span class="nav-icon" aria-hidden="true">✎</span>New Announcement</button>
           <button class="nav-link" type="button" data-view="lesson-plans" id="lesson-plans-nav"><span class="nav-icon" aria-hidden="true">▤</span>Lesson Plans</button>
           <button class="nav-link" type="button" data-view="ancillary" id="ancillary-nav" hidden><span class="nav-icon" aria-hidden="true">✚</span>Ancillary Tasks</button>
           <button class="nav-link" type="button" data-view="summary" id="summary-nav" hidden><span class="nav-icon" aria-hidden="true">≣</span>Summary</button>
+          <button class="nav-link" type="button" data-view="memos"><span class="nav-icon" aria-hidden="true">❐</span>Memos</button>
+          <button class="nav-link" type="button" data-view="schedule" data-roles="developer,admin,teacher" hidden><span class="nav-icon" aria-hidden="true">▦</span>Schedule</button>
+          <button class="nav-link" type="button" data-view="attendance" data-roles="developer,admin,teacher" hidden><span class="nav-icon" aria-hidden="true">✔</span>Attendance</button>
           <button class="nav-link" type="button" data-view="settings"><span class="nav-icon" aria-hidden="true">⚙</span>Settings</button>
         </nav>
         <div class="sidebar-bottom">
@@ -86,6 +91,7 @@
           <section class="portal-view" id="view-overview">
             <div class="section-heading"><div><h2 id="welcome-heading">Welcome</h2><p>Your school workspace at a glance.</p></div></div>
             <div id="overview-stats" class="overview-stats"></div>
+            <section class="panel" id="notice-panel" hidden><div class="panel-heading"><div><h2>Notices</h2><p>Messages from the administrator about your submissions.</p></div><button class="text-button" type="button" id="notice-clear-all">Dismiss all</button></div><div id="notice-list" class="feed-list"></div></section>
             <section class="panel" id="lp-dashboard-notifications" hidden><div class="panel-heading"><div><h2>Lesson Plan Notifications</h2><p id="lp-notification-summary">Lesson-plan tasks and review updates.</p></div><button class="text-button" type="button" data-go-view="lesson-plans">Open Lesson Plans</button></div><div id="lp-notification-list" class="feed-list"></div></section>
             <div class="overview-columns overview-single">
               <section class="panel">
@@ -123,16 +129,30 @@
           </section>
 
           <section class="portal-view" id="view-announcements" hidden>
-            <div class="section-heading"><div><h2>Announcements</h2><p>School and classroom updates.</p></div></div>
-            <section class="panel compose-panel" id="announcement-compose-panel" hidden>
-              <div class="panel-heading"><div><h2>Publish an announcement</h2><p>Visible to all active portal accounts.</p></div></div>
+            <div class="section-heading"><div><h2>Announcements</h2><p>Current school and classroom announcements. Each one disappears when its display period ends.</p></div><button class="button button-primary" type="button" id="go-new-announcement" data-roles="developer,admin,teacher" hidden>＋ New announcement</button></div>
+            <div id="announcement-list" class="content-feed announcement-feed"></div>
+            <dialog id="photo-dialog" class="lp-dialog photo-dialog" aria-label="Announcement photo"><div class="lp-dialog-head"><div><small id="photo-dialog-kicker">Announcement</small><h3 id="photo-dialog-title">Photo</h3></div><button type="button" class="lp-dialog-close" id="photo-dialog-close" aria-label="Close">&times;</button></div><div class="photo-dialog-body"><img id="photo-dialog-img" alt="" /></div></dialog>
+          </section>
+
+          <section class="portal-view" id="view-create-announcement" hidden>
+            <div class="section-heading"><div><h2>New announcement</h2><p>Write it, add photos or a pubmat, and choose how long it stays up. It is deleted automatically afterwards.</p></div></div>
+            <section class="panel compose-panel">
               <form id="announcement-form" class="portal-form">
                 <label class="login-field" for="announcement-title">Title<input id="announcement-title" name="title" maxlength="180" required /></label>
-                <label class="login-field" for="announcement-body">Announcement<textarea id="announcement-body" name="body" rows="4" maxlength="10000" required></textarea></label>
-                <div class="form-actions"><span class="form-hint">Up to 10,000 characters</span><button class="button button-primary" type="submit">Publish</button></div>
+                <label class="login-field" for="announcement-body">Announcement<textarea id="announcement-body" name="body" rows="5" maxlength="10000" required></textarea></label>
+                <div class="form-row">
+                  <label class="login-field" for="announcement-duration">Display for<select id="announcement-duration" name="duration">
+                    <option value="1d">1 day</option><option value="3d">3 days</option><option value="7d" selected>1 week</option><option value="14d">2 weeks</option><option value="30d">1 month</option><option value="custom">Until a date I choose…</option></select></label>
+                  <label class="login-field" for="announcement-until" id="announcement-until-wrap" hidden>Show until (end of day)<input id="announcement-until" type="date" /></label>
+                </div>
+                <div class="login-field"><span>Photos / pubmat (optional, up to 4)</span>
+                  <input id="announcement-photos" type="file" accept="image/jpeg,image/png,image/webp,image/gif" multiple />
+                  <small class="form-hint">Large pictures are shrunk automatically so they load quickly.</small>
+                  <div id="announcement-photo-preview" class="photo-preview"></div></div>
+                <p id="announcement-form-error" class="form-error" role="alert" hidden></p>
+                <div class="form-actions"><span class="form-hint" id="announcement-expiry-hint"></span><button class="button button-primary" type="submit">Publish announcement</button></div>
               </form>
             </section>
-            <div id="announcement-list" class="content-feed"></div>
           </section>
 
           <section class="portal-view" id="view-lesson-plans" hidden>
@@ -190,10 +210,18 @@
               <div class="panel-heading"><div><h2>Progress by teacher</h2><p>Choose a teacher to open their subjects for the selected term.</p></div></div>
               <div class="table-scroll"><table class="data-table lp-table"><thead><tr><th>Teacher</th><th>Subjects</th><th>Tasks</th><th>Submitted</th><th>Approved</th><th>Overdue</th><th>Progress</th></tr></thead><tbody id="lp-teacher-progress"></tbody></table></div>
             </section>
-            <section class="panel compose-panel" data-lp-pane="progress" id="lesson-plan-task-panel" hidden>
-              <div class="panel-heading"><div><h2 id="lp-task-detail-heading">Lesson-plan details</h2><p>Select a day on the calendar to open its PDF, approval status, feedback and revision history.</p></div><button type="button" class="button button-secondary" id="lp-close-details">Close</button></div>
-              <div id="lesson-plan-task-list" class="lp-cal-host"></div>
-            </section>
+            <div class="lp-drawer-scrim" id="lp-drawer-scrim"></div>
+            <aside class="lp-drawer" id="lesson-plan-task-panel" aria-label="Lesson plan calendar" aria-hidden="true">
+              <header class="lp-drawer-head">
+                <div><small id="lp-drawer-kicker">Lesson plans</small><h3 id="lp-task-detail-heading">Lesson-plan calendar</h3></div>
+                <button type="button" class="lp-dialog-close" id="lp-close-details" aria-label="Close calendar">&times;</button>
+              </header>
+              <div class="lp-drawer-controls">
+                <label class="login-field" for="lp-drawer-teacher">Teacher<select id="lp-drawer-teacher"></select></label>
+                <div id="lp-drawer-subjects" class="lp-subject-pills" role="tablist" aria-label="Subjects of the selected teacher"></div>
+              </div>
+              <div id="lesson-plan-task-list" class="lp-cal-host lp-drawer-body"></div>
+            </aside>
 
             <!-- TEACHER: one calendar per subject -->
             <div id="lp-teacher-task-list" class="lp-cal-host"></div>
@@ -201,6 +229,27 @@
             <dialog id="lp-day-dialog" class="lp-dialog" aria-labelledby="lp-day-title">
               <div class="lp-dialog-head"><div><small id="lp-day-kicker"></small><h3 id="lp-day-title">Lesson plan</h3></div><button type="button" class="lp-dialog-close" id="lp-day-close" aria-label="Close">&times;</button></div>
               <div id="lp-day-body" class="lp-dialog-body"></div>
+            </dialog>
+            <dialog id="lp-warning-dialog" class="lp-dialog" aria-labelledby="lp-warning-title">
+              <div class="lp-dialog-head"><div><small class="warn-kicker">⚠ Please check your file</small><h3 id="lp-warning-title">This may not be a lesson plan</h3></div></div>
+              <form id="lp-warning-form" class="lp-dialog-body">
+                <p class="lp-note">We looked at <strong id="lp-warning-file"></strong> and noticed:</p>
+                <ul id="lp-warning-list" class="warn-list"></ul>
+                <p class="lp-note">If this really is your lesson plan, you can appeal and it will be submitted anyway. The administrator will see a warning mark on it until they approve it. If it was the wrong file, cancel and choose another.</p>
+                <label class="login-field">Note to the administrator (optional)<textarea name="appealNote" rows="2" maxlength="500" placeholder="e.g. This is a scanned weekly plan covering Mon–Fri."></textarea></label>
+                <div class="form-actions"><button class="button button-secondary" type="button" id="lp-warning-cancel">Cancel, choose another file</button><button class="button button-primary" type="submit">Yes, it is a lesson plan — submit</button></div>
+              </form>
+            </dialog>
+            <dialog id="lp-delete-dialog" class="lp-dialog" aria-labelledby="lp-delete-title">
+              <div class="lp-dialog-head"><div><small>Delete submission</small><h3 id="lp-delete-title">Delete this lesson plan?</h3></div><button type="button" class="lp-dialog-close" id="lp-delete-close" aria-label="Close">&times;</button></div>
+              <form id="lp-delete-form" class="lp-dialog-body">
+                <p class="lp-note" id="lp-delete-summary"></p>
+                <p class="lp-note">The teacher is notified and must upload again. Choose what happens to the passing date:</p>
+                <label class="lp-choice"><input type="radio" name="keepDate" value="keep" checked /><span><strong>Retain the original passing date</strong><small>The re-upload keeps the date it was first passed, so it is not marked late.</small></span></label>
+                <label class="lp-choice"><input type="radio" name="keepDate" value="reset" /><span><strong>Reset the passing date</strong><small>The date the teacher uploads again becomes the new passing date.</small></span></label>
+                <label class="login-field">Reason shown to the teacher (optional)<input name="reason" maxlength="500" /></label>
+                <div class="form-actions"><button class="button button-secondary" type="button" id="lp-delete-cancel">Cancel</button><button class="button button-danger" type="submit">Delete lesson plan</button></div>
+              </form>
             </dialog>
           </section>
 
@@ -245,8 +294,66 @@
             <div id="summary-list" class="summary-grid"></div>
           </section>
 
+          <section class="portal-view" id="view-memos" hidden>
+            <div class="section-heading"><div><h2>Memos</h2><p id="memo-subtitle">Official memos from the school administration (PDF).</p></div></div>
+            <section class="panel compose-panel" id="memo-compose-panel" hidden>
+              <details id="memo-compose-details">
+                <summary class="anc-summary-toggle">＋ Upload a memo</summary>
+                <form id="memo-form" class="portal-form">
+                  <label class="login-field" for="memo-title">Memo title<input id="memo-title" maxlength="180" required placeholder="e.g. Memo No. 12 s. 2026 – Brigada Eskwela" /></label>
+                  <label class="login-field" for="memo-description">Short description (optional)<textarea id="memo-description" rows="2" maxlength="2000"></textarea></label>
+                  <label class="login-field" for="memo-file">PDF file (max 8 MB)<input id="memo-file" type="file" accept="application/pdf,.pdf" required /></label>
+                  <div class="form-actions"><span class="form-hint">Only administrators can upload memos.</span><button class="button button-primary" type="submit">Upload memo</button></div>
+                </form>
+              </details>
+            </section>
+            <section class="panel"><div class="panel-heading"><div><h2>All memos</h2><p id="memo-count"></p></div><label class="search-box"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m16 16 4 4"/></svg><input id="memo-search" type="search" placeholder="Search memos" aria-label="Search memos" autocomplete="off" /></label></div><div id="memo-list" class="memo-list"></div></section>
+          </section>
+
+          <section class="portal-view" id="view-schedule" hidden>
+            <div class="section-heading"><div><h2>Class schedule</h2><p id="schedule-subtitle">Generated automatically from the schedules teachers enter in Settings.</p></div></div>
+            <section class="panel term-filter-panel" id="schedule-teacher-bar" hidden><label class="login-field" for="schedule-teacher">Teacher<select id="schedule-teacher"></select></label></section>
+            <section class="panel schedule-panel"><div id="schedule-grid" class="schedule-host"></div></section>
+            <section class="panel compose-panel" id="schedule-admin-panel" hidden>
+              <div class="panel-heading"><div><h2>Add or correct a class</h2><p>Administrators can edit any teacher's schedule here.</p></div></div>
+              <div id="schedule-admin-form-host"></div>
+              <div id="schedule-admin-list" class="schedule-entry-list"></div>
+            </section>
+          </section>
+
+          <section class="portal-view" id="view-attendance" hidden>
+            <div class="section-heading"><div><h2>Attendance</h2><p>Who is in school today. Select a teacher for details.</p></div></div>
+            <section class="panel attendance-me" id="attendance-me" hidden></section>
+            <section class="panel term-filter-panel attendance-bar">
+              <label class="login-field" for="attendance-date">Date<input id="attendance-date" type="date" /></label>
+              <button type="button" class="button button-secondary" id="attendance-today">Today</button>
+              <div class="attendance-legend" aria-label="Legend"><span><i class="att-dot att-present"></i>Present</span><span><i class="att-dot att-leave"></i>On leave</span><span><i class="att-dot att-travel"></i>On travel</span><span><i class="att-dot att-none"></i>No record</span></div>
+            </section>
+            <div id="attendance-totals" class="overview-stats"></div>
+            <div id="attendance-list"></div>
+          </section>
+
           <section class="portal-view" id="view-settings" hidden>
-            <div class="section-heading"><div><h2>Account security</h2><p>Update your sign-in password.</p></div></div>
+            <div class="section-heading"><div><h2>Settings</h2><p>Your profile, sign-in details and class schedule.</p></div></div>
+            <section class="panel security-panel">
+              <div class="panel-heading"><div><h2>Profile</h2><p>Your name and contact details. Email and phone number are optional.</p></div></div>
+              <form id="profile-form" class="portal-form">
+                <label class="login-field" for="profile-name-input">Full name<input id="profile-name-input" name="displayName" required minlength="2" maxlength="120" autocomplete="name" /></label>
+                <div class="form-row">
+                  <label class="login-field" for="profile-email">Email (optional)<input id="profile-email" name="email" type="email" maxlength="254" autocomplete="email" /></label>
+                  <label class="login-field" for="profile-phone">Phone number (optional)<input id="profile-phone" name="phone" type="tel" maxlength="20" autocomplete="tel" placeholder="e.g. 0917 123 4567" /></label>
+                </div>
+                <label class="login-field" for="profile-username">Username<input id="profile-username" name="username" required minlength="3" maxlength="40" autocomplete="username" /></label>
+                <label class="login-field" id="profile-password-wrap" for="profile-current-password" hidden>Current password (needed to change your username)<input id="profile-current-password" name="currentPassword" type="password" maxlength="256" autocomplete="current-password" /></label>
+                <p id="profile-form-error" class="form-error" role="alert" hidden></p>
+                <div class="form-actions"><span class="form-hint">Changing your username changes how you sign in next time.</span><button class="button button-primary" type="submit">Save profile</button></div>
+              </form>
+            </section>
+            <section class="panel security-panel" id="settings-schedule-panel" hidden>
+              <div class="panel-heading"><div><h2>My class schedule</h2><p>Add each class: pick the day, time, subject and section, then save. The Schedule tab and Attendance tab update automatically.</p></div></div>
+              <div id="settings-schedule-form-host"></div>
+              <div id="settings-schedule-list" class="schedule-entry-list"></div>
+            </section>
             <section class="panel security-panel">
               <div class="panel-heading"><div><h2>Change password</h2><p>Use a unique password that is at least 12 characters long.</p></div></div>
               <form id="password-form" class="portal-form">
@@ -278,6 +385,25 @@
         </div>
         <div class="dialog-actions"><button class="button button-secondary" id="cancel-user-dialog" type="button">Cancel</button><button class="button button-primary" id="save-user-button" type="submit">Create account</button></div>
       </form>
+    </dialog>
+    <dialog id="attendance-dialog" class="lp-dialog attendance-dialog" aria-labelledby="attendance-title">
+      <div class="lp-dialog-head"><div><small id="attendance-kicker">Good morning</small><h3 id="attendance-title">Record your attendance</h3></div></div>
+      <form id="attendance-form" class="lp-dialog-body">
+        <p class="lp-note" id="attendance-intro">You signed in after 7:29 AM. Tell us where you are today.</p>
+        <div class="att-choices" role="radiogroup" aria-label="Attendance status">
+          <button type="button" class="att-choice att-choice-present" data-att-choice="present" role="radio" aria-checked="false"><i class="att-dot att-present"></i><strong>Present</strong><small>I am in school</small></button>
+          <button type="button" class="att-choice att-choice-leave" data-att-choice="leave" role="radio" aria-checked="false"><i class="att-dot att-leave"></i><strong>On leave</strong><small>I am on leave today</small></button>
+          <button type="button" class="att-choice att-choice-travel" data-att-choice="travel" role="radio" aria-checked="false"><i class="att-dot att-travel"></i><strong>On travel</strong><small>Official travel / out of school</small></button>
+        </div>
+        <label class="login-field" id="attendance-leave-wrap" hidden>Type of leave<select name="leaveType" id="attendance-leave-type"></select></label>
+        <label class="login-field" id="attendance-details-wrap" hidden><span id="attendance-details-label">Short details</span><input name="details" id="attendance-details" maxlength="300" /></label>
+        <p id="attendance-error" class="form-error" role="alert" hidden></p>
+        <div class="form-actions"><button class="button button-secondary" type="button" id="attendance-cancel" hidden>Cancel</button><button class="button button-primary" type="submit" id="attendance-save" disabled>Save attendance</button></div>
+      </form>
+    </dialog>
+    <dialog id="attendance-detail" class="lp-dialog" aria-labelledby="attendance-detail-title">
+      <div class="lp-dialog-head"><div><small id="attendance-detail-kicker"></small><h3 id="attendance-detail-title">Teacher</h3></div><button type="button" class="lp-dialog-close" id="attendance-detail-close" aria-label="Close">&times;</button></div>
+      <div id="attendance-detail-body" class="lp-dialog-body"></div>
     </dialog>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
   </body>

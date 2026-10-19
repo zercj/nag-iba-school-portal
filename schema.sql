@@ -255,3 +255,113 @@ CREATE TABLE IF NOT EXISTS ancillary_submissions (
   UNIQUE (task_id, teacher_id)
 );
 CREATE INDEX IF NOT EXISTS ancillary_submissions_teacher_idx ON ancillary_submissions (teacher_id, task_id);
+
+-- ===================================================================
+-- Profile, announcements with photos + expiry, memos, notifications,
+-- lesson-plan flags/retained dates, class schedules and attendance.
+-- All statements are additive and safe to re-run on existing deployments.
+-- ===================================================================
+
+-- Optional phone number on every account.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT;
+
+-- Announcements: a display window (expires_at) and optional photos (pubmats).
+-- Rows created before this release have no expiry and are kept until deleted.
+ALTER TABLE announcements ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS announcements_expires_idx ON announcements (expires_at);
+CREATE TABLE IF NOT EXISTS announcement_images (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  announcement_id BIGINT NOT NULL REFERENCES announcements(id) ON DELETE CASCADE,
+  position SMALLINT NOT NULL DEFAULT 0,
+  file_name TEXT NOT NULL,
+  mime_type TEXT NOT NULL,
+  file_size BIGINT NOT NULL,
+  file_data BYTEA NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS announcement_images_ann_idx ON announcement_images (announcement_id, position);
+
+-- Memos: PDF only, uploaded by administrators, readable by every signed-in account.
+CREATE TABLE IF NOT EXISTS memos (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  title TEXT NOT NULL CHECK (CHAR_LENGTH(title) BETWEEN 1 AND 180),
+  description TEXT NOT NULL DEFAULT '',
+  file_name TEXT NOT NULL,
+  file_size BIGINT NOT NULL,
+  file_data BYTEA NOT NULL,
+  uploaded_by BIGINT REFERENCES users(id) ON DELETE SET NULL,
+  uploader_name TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS memos_created_idx ON memos (created_at DESC);
+
+-- In-app notifications (e.g. an administrator removed a lesson plan).
+CREATE TABLE IF NOT EXISTS notifications (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL,
+  title TEXT NOT NULL,
+  body TEXT NOT NULL DEFAULT '',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  read_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS notifications_user_idx ON notifications (user_id, read_at, created_at DESC);
+
+-- Lesson-plan upload checks: a content fingerprint (duplicate detection) and
+-- the warning raised when a file does not look like a lesson plan. A teacher
+-- can appeal; the warning stays on the admin side until the plan is approved.
+ALTER TABLE lesson_plan_uploads ADD COLUMN IF NOT EXISTS file_hash CHAR(64);
+ALTER TABLE lesson_plan_uploads ADD COLUMN IF NOT EXISTS flag_codes TEXT NOT NULL DEFAULT '';
+ALTER TABLE lesson_plan_uploads ADD COLUMN IF NOT EXISTS flag_reason TEXT NOT NULL DEFAULT '';
+ALTER TABLE lesson_plan_uploads ADD COLUMN IF NOT EXISTS appeal_note TEXT NOT NULL DEFAULT '';
+ALTER TABLE lesson_plan_upload_versions ADD COLUMN IF NOT EXISTS file_hash CHAR(64);
+UPDATE lesson_plan_uploads SET file_hash = encode(sha256(file_data), 'hex') WHERE file_hash IS NULL;
+UPDATE lesson_plan_upload_versions SET file_hash = encode(sha256(file_data), 'hex') WHERE file_hash IS NULL;
+CREATE INDEX IF NOT EXISTS lp_upload_hash_idx ON lesson_plan_uploads (file_hash);
+CREATE INDEX IF NOT EXISTS lp_version_hash_idx ON lesson_plan_upload_versions (file_hash);
+
+-- When an administrator deletes a submission and chooses to keep the original
+-- passing date, the date is parked here until the teacher uploads again.
+CREATE TABLE IF NOT EXISTS lesson_plan_retained_dates (
+  task_id BIGINT PRIMARY KEY REFERENCES lesson_plan_generated_tasks(id) ON DELETE CASCADE,
+  original_submitted_at TIMESTAMPTZ NOT NULL,
+  deleted_by BIGINT REFERENCES users(id) ON DELETE SET NULL,
+  deleted_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Teacher class schedule (built in Settings, shown in the Schedule tab).
+CREATE TABLE IF NOT EXISTS teacher_schedule (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  teacher_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  weekday SMALLINT NOT NULL CHECK (weekday BETWEEN 1 AND 5),
+  time_in TIME NOT NULL,
+  time_out TIME NOT NULL,
+  subject TEXT NOT NULL CHECK (CHAR_LENGTH(subject) BETWEEN 1 AND 160),
+  section TEXT NOT NULL CHECK (CHAR_LENGTH(section) BETWEEN 1 AND 80),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CHECK (time_out > time_in)
+);
+CREATE INDEX IF NOT EXISTS teacher_schedule_teacher_idx ON teacher_schedule (teacher_id, weekday, time_in);
+
+-- Section names offered in the schedule dropdown.
+CREATE TABLE IF NOT EXISTS school_sections (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  name TEXT NOT NULL CHECK (CHAR_LENGTH(name) BETWEEN 1 AND 80),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS school_sections_name_unique ON school_sections (LOWER(name));
+
+-- One attendance record per teacher per school day.
+CREATE TABLE IF NOT EXISTS attendance_records (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  teacher_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  attendance_date DATE NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('present', 'leave', 'travel')),
+  leave_type TEXT NOT NULL DEFAULT '',
+  details TEXT NOT NULL DEFAULT '',
+  logged_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  auto_recorded BOOLEAN NOT NULL DEFAULT FALSE,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (teacher_id, attendance_date)
+);
+CREATE INDEX IF NOT EXISTS attendance_date_idx ON attendance_records (attendance_date);

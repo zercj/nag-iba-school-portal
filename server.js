@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import pg from "pg";
 import { canManageContent, canManageRole, rolesVisibleTo } from "./permissions.js";
+import { analyzePdf, contentFlags } from "./pdf-check.js";
 
 const { Pool } = pg;
 const scrypt = promisify(scryptCallback);
@@ -15,11 +16,14 @@ const port = Number(process.env.PORT || 8000);
 const appOrigin = process.env.APP_ORIGIN || process.env.RENDER_EXTERNAL_URL;
 const isProduction = process.env.NODE_ENV === "production";
 const sessionDurationMs = 8 * 60 * 60 * 1000;
+const schoolTimeZone = process.env.SCHOOL_TZ || "Asia/Manila";
+const lateAfterMinutes = 7 * 60 + 29; // logging in after 7:29 AM asks for attendance
 const staticFiles = new Map([
   ["/", ["index.html", "text/html; charset=utf-8"]],
   ["/index.html", ["index.html", "text/html; charset=utf-8"]],
   ["/styles.css", ["styles.css", "text/css; charset=utf-8"]],
   ["/app.js", ["app.js", "text/javascript; charset=utf-8"]],
+  ["/features.js", ["features.js", "text/javascript; charset=utf-8"]],
   ["/school-logo.png", ["school-logo.png", "image/png"]],
 ]);
 
@@ -104,6 +108,14 @@ function validateEmail(value) {
   return value.trim().toLowerCase();
 }
 
+function validatePhone(value) {
+  if (value === null || value === undefined || value === "") return null;
+  if (typeof value !== "string" || !/^[0-9+()\-.\s]{7,20}$/.test(value.trim())) {
+    throw new HttpError(400, "Enter a valid phone number (digits, spaces, + - ( ) only), or leave it blank.");
+  }
+  return value.trim();
+}
+
 function validateRole(value) {
   if (!["admin", "teacher", "student"].includes(value)) {
     throw new HttpError(400, "Role must be administrator, teacher, or student.");
@@ -123,7 +135,7 @@ function parseJson(request) {
     let raw = "";
     request.on("data", (chunk) => {
       raw += chunk;
-      if (raw.length > 12_000_000) {
+      if (raw.length > 16_000_000) {
         reject(new HttpError(413, "Request body is too large."));
         request.destroy();
       }
@@ -203,6 +215,7 @@ function safeUser(row) {
     username: row.username,
     displayName: row.display_name,
     email: row.email,
+    phone: row.phone ?? null,
     role: row.role,
     active: row.active,
     createdAt: row.created_at,
@@ -213,7 +226,7 @@ async function getSessionUser(request) {
   const token = cookieValue(request, "school_session");
   if (!token || token.length > 200) return null;
   const result = await pool.query(
-    `SELECT u.id, u.username, u.display_name, u.email, u.role, u.active
+    `SELECT u.id, u.username, u.display_name, u.email, u.phone, u.role, u.active
      FROM sessions s JOIN users u ON u.id = s.user_id
      WHERE s.token_hash = $1 AND s.expires_at > NOW() AND u.active = TRUE`,
     [tokenDigest(token)],
@@ -226,6 +239,39 @@ async function audit(connection, actorId, action, targetType, targetId = null) {
     "INSERT INTO audit_logs (actor_id, action, target_type, target_id) VALUES ($1, $2, $3, $4)",
     [actorId, action, targetType, targetId === null ? null : String(targetId)],
   );
+}
+
+
+// School-local date/time (Philippines by default) so "7:29 AM" means the same thing for everyone.
+function schoolNow(date = new Date()) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-CA", {
+    timeZone: schoolTimeZone, year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", hourCycle: "h23", weekday: "short",
+  }).formatToParts(date).map((part) => [part.type, part.value]));
+  const hour = Number(parts.hour), minute = Number(parts.minute);
+  const weekday = { Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 7 }[parts.weekday];
+  return { date: `${parts.year}-${parts.month}-${parts.day}`, minutes: hour * 60 + minute, time: `${parts.hour}:${parts.minute}`, weekday };
+}
+
+async function notify(connection, userId, kind, title, body = "") {
+  await connection.query("INSERT INTO notifications (user_id, kind, title, body) VALUES ($1, $2, $3, $4)", [userId, kind, title, body]);
+}
+
+function sha256Hex(buffer) {
+  return createHash("sha256").update(buffer).digest("hex");
+}
+
+function readImagePayload(file) {
+  if (!file || typeof file.name !== "string" || typeof file.data !== "string") throw new HttpError(400, "One of the photos is invalid.");
+  const data = Buffer.from(file.data, "base64");
+  if (!data.length || data.length > 3 * 1024 * 1024) throw new HttpError(413, "Each photo must be 3 MB or smaller.");
+  let mime = null;
+  if (data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff) mime = "image/jpeg";
+  else if (data.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) mime = "image/png";
+  else if (data.subarray(0, 4).toString("ascii") === "RIFF" && data.subarray(8, 12).toString("ascii") === "WEBP") mime = "image/webp";
+  else if (["GIF87a", "GIF89a"].includes(data.subarray(0, 6).toString("ascii"))) mime = "image/gif";
+  if (!mime) throw new HttpError(400, "Photos must be JPEG, PNG, WebP or GIF images.");
+  return { name: path.basename(file.name).slice(0, 255) || "photo", mime, data };
 }
 
 async function inTransaction(callback) {
@@ -310,6 +356,17 @@ async function authenticate(request, response, url) {
       "INSERT INTO sessions (token_hash, user_id, expires_at) VALUES ($1, $2, $3)",
       [tokenDigest(token), user.id, expiresAt],
     );
+    if (user.role === "teacher") {
+      // Signing in at or before 7:29 AM counts as present; later sign-ins are asked in the browser.
+      const now = schoolNow();
+      if (now.minutes <= lateAfterMinutes) {
+        await pool.query(
+          `INSERT INTO attendance_records (teacher_id, attendance_date, status, auto_recorded)
+           VALUES ($1, $2, 'present', TRUE) ON CONFLICT (teacher_id, attendance_date) DO NOTHING`,
+          [user.id, now.date],
+        );
+      }
+    }
     sendJson(response, 200, { user: safeUser(user) }, { "Set-Cookie": sessionCookie(token, expiresAt) });
     return true;
   }
@@ -346,7 +403,7 @@ async function handleUserRoutes(request, response, url, actor) {
     const roles = rolesVisibleTo(actor.role);
     if (!roles) throw new HttpError(403, "Student accounts cannot manage user accounts.");
     const result = await pool.query(
-      "SELECT id, username, display_name, email, role, active, created_at FROM users WHERE role = ANY($1::text[]) ORDER BY role, display_name",
+      "SELECT id, username, display_name, email, phone, role, active, created_at FROM users WHERE role = ANY($1::text[]) ORDER BY role, display_name",
       [roles],
     );
     sendJson(response, 200, { users: result.rows.map(safeUser) });
@@ -435,6 +492,41 @@ async function handleUserRoutes(request, response, url, actor) {
 }
 
 async function handleAccountRoutes(request, response, url, actor) {
+  if (request.method === "PATCH" && url.pathname === "/api/account/profile") {
+    ensureSameOrigin(request);
+    const body = await parseJson(request);
+    const current = await pool.query("SELECT id, username, display_name, email, phone, role, active, created_at, password_hash FROM users WHERE id = $1 AND active = TRUE", [actor.id]);
+    if (!current.rowCount) throw new HttpError(404, "Account not found.");
+    const row = current.rows[0];
+    const displayName = body.displayName === undefined ? row.display_name : validateDisplayName(body.displayName);
+    const email = body.email === undefined ? row.email : validateEmail(body.email);
+    const phone = body.phone === undefined ? row.phone : validatePhone(body.phone);
+    const username = body.username === undefined ? row.username : validateUsername(body.username);
+    if (normalizeUsername(username) !== normalizeUsername(row.username) || username !== row.username) {
+      // Changing the sign-in name needs the current password.
+      const currentPassword = typeof body.currentPassword === "string" ? body.currentPassword : "";
+      if (!currentPassword || !(await passwordMatches(currentPassword, row.password_hash))) {
+        throw new HttpError(400, "Enter your current password to change your username.");
+      }
+    }
+    let updated;
+    try {
+      updated = await inTransaction(async (connection) => {
+        const result = await connection.query(
+          `UPDATE users SET username = $2, display_name = $3, email = $4, phone = $5, updated_at = NOW()
+           WHERE id = $1 RETURNING id, username, display_name, email, phone, role, active, created_at`,
+          [actor.id, username, displayName, email, phone],
+        );
+        await audit(connection, actor.id, "account.profile_updated", "user", actor.id);
+        return result.rows[0];
+      });
+    } catch (error) {
+      if (error.code === "23505") throw new HttpError(409, "That username is already in use.");
+      throw error;
+    }
+    sendJson(response, 200, { user: safeUser(updated) });
+    return true;
+  }
   if (request.method !== "POST" || url.pathname !== "/api/account/password") return false;
   ensureSameOrigin(request);
   const body = await parseJson(request);
@@ -514,29 +606,75 @@ async function handleMessageRoutes(request, response, url, actor) {
   return false;
 }
 
+async function purgeExpiredAnnouncements() {
+  // Photos are removed with their announcement (ON DELETE CASCADE).
+  await pool.query("DELETE FROM announcements WHERE expires_at IS NOT NULL AND expires_at <= NOW()");
+}
+
+function parseExpiry(value) {
+  const when = new Date(String(value || ""));
+  if (Number.isNaN(when.getTime())) throw new HttpError(400, "Choose how long the announcement should stay up.");
+  const now = Date.now();
+  if (when.getTime() < now + 60_000) throw new HttpError(400, "The end of the display period must be in the future.");
+  if (when.getTime() > now + 366 * 24 * 60 * 60 * 1000) throw new HttpError(400, "An announcement can be displayed for at most one year.");
+  return when;
+}
+
 async function handleAnnouncementRoutes(request, response, url, actor) {
   if (request.method === "GET" && url.pathname === "/api/announcements") {
+    await purgeExpiredAnnouncements();
     const result = await pool.query(
-      `SELECT a.id, a.title, a.body, a.created_at, a.updated_at,
-              a.author_name AS author_name, u.username AS author_username, a.author_id
+      `SELECT a.id, a.title, a.body, a.created_at, a.updated_at, a.expires_at,
+              a.author_name AS author_name, u.username AS author_username, a.author_id,
+              COALESCE((SELECT json_agg(json_build_object('id', i.id, 'fileName', i.file_name) ORDER BY i.position, i.id)
+                        FROM announcement_images i WHERE i.announcement_id = a.id), '[]') AS images
        FROM announcements a LEFT JOIN users u ON u.id = a.author_id
        ORDER BY a.created_at DESC LIMIT 200`,
     );
     sendJson(response, 200, { announcements: result.rows });
     return true;
   }
+
+  const imageMatch = url.pathname.match(/^\/api\/announcements\/images\/(\d+)$/);
+  if (request.method === "GET" && imageMatch) {
+    const result = await pool.query(
+      `SELECT i.mime_type, i.file_data FROM announcement_images i JOIN announcements a ON a.id = i.announcement_id
+       WHERE i.id = $1 AND (a.expires_at IS NULL OR a.expires_at > NOW())`,
+      [imageMatch[1]],
+    );
+    if (!result.rowCount) throw new HttpError(404, "Photo not found.");
+    response.writeHead(200, {
+      "Content-Type": result.rows[0].mime_type,
+      "Cache-Control": "private, max-age=3600",
+      "X-Content-Type-Options": "nosniff",
+    });
+    response.end(result.rows[0].file_data);
+    return true;
+  }
+
   if (request.method === "POST" && url.pathname === "/api/announcements") {
     ensureSameOrigin(request);
     requireRole(actor, ["developer", "admin", "teacher"]);
     const body = await parseJson(request);
     const title = requiredText(body.title, "Title", 180);
     const content = requiredText(body.body, "Announcement", 10000);
+    const expiresAt = parseExpiry(body.expiresAt);
+    const files = Array.isArray(body.images) ? body.images : [];
+    if (files.length > 4) throw new HttpError(400, "Attach up to 4 photos.");
+    const images = files.map(readImagePayload);
     const created = await inTransaction(async (connection) => {
       const result = await connection.query(
-        `INSERT INTO announcements (title, body, author_id, author_name)
-         VALUES ($1, $2, $3, $4) RETURNING id, title, body, created_at, author_name`,
-        [title, content, actor.id, actor.display_name],
+        `INSERT INTO announcements (title, body, author_id, author_name, expires_at)
+         VALUES ($1, $2, $3, $4, $5) RETURNING id, title, body, created_at, expires_at, author_name`,
+        [title, content, actor.id, actor.display_name, expiresAt],
       );
+      for (const [index, image] of images.entries()) {
+        await connection.query(
+          `INSERT INTO announcement_images (announcement_id, position, file_name, mime_type, file_size, file_data)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [result.rows[0].id, index, image.name, image.mime, image.data.length, image.data],
+        );
+      }
       await audit(connection, actor.id, "announcement.created", "announcement", result.rows[0].id);
       return result.rows[0];
     });
@@ -555,13 +693,14 @@ async function handleAnnouncementRoutes(request, response, url, actor) {
   if (request.method === "PATCH") {
     ensureSameOrigin(request);
     const body = await parseJson(request);
-    const current = await pool.query("SELECT title, body FROM announcements WHERE id = $1", [match[1]]);
+    const current = await pool.query("SELECT title, body, expires_at FROM announcements WHERE id = $1", [match[1]]);
     const title = body.title === undefined ? current.rows[0].title : requiredText(body.title, "Title", 180);
     const content = body.body === undefined ? current.rows[0].body : requiredText(body.body, "Announcement", 10000);
+    const expiresAt = body.expiresAt === undefined ? current.rows[0].expires_at : parseExpiry(body.expiresAt);
     const updated = await inTransaction(async (connection) => {
       const result = await connection.query(
-        "UPDATE announcements SET title = $2, body = $3, updated_at = NOW() WHERE id = $1 RETURNING id, title, body, updated_at",
-        [match[1], title, content],
+        "UPDATE announcements SET title = $2, body = $3, expires_at = $4, updated_at = NOW() WHERE id = $1 RETURNING id, title, body, expires_at, updated_at",
+        [match[1], title, content, expiresAt],
       );
       await audit(connection, actor.id, "announcement.updated", "announcement", match[1]);
       return result.rows[0];
@@ -579,6 +718,52 @@ async function handleAnnouncementRoutes(request, response, url, actor) {
     return true;
   }
   return false;
+}
+
+function parseWeekdays(value) {
+  const weekdays = [...new Set((Array.isArray(value) ? value : []).map(Number))].sort((x, y) => x - y);
+  if (!weekdays.length || weekdays.some((d) => !Number.isInteger(d) || d < 1 || d > 5)) {
+    throw new HttpError(400, "Choose at least one instruction day from Monday to Friday.");
+  }
+  return weekdays;
+}
+
+// Re-plans the instruction days of one subject for one term. Days that already
+// hold a submission are never removed. Runs inside the caller's transaction.
+async function applyWeekdays(conn, assignmentId, term, weekdays) {
+  const a = await conn.query("SELECT teacher_id,subject_id FROM lesson_plan_subject_assignments WHERE id=$1 FOR UPDATE", [assignmentId]);
+  if (!a.rowCount) throw new HttpError(404, "Teacher–subject assignment not found.");
+  const { teacher_id: teacherId, subject_id: subjectId } = a.rows[0];
+  const existing = await conn.query(`SELECT id,week_number,to_char(due_date,'YYYY-MM-DD') AS due FROM lesson_plan_generated_tasks
+    WHERE term_number=$1 AND teacher_id=$2 AND subject_id=$3 ORDER BY week_number,due_date`, [term,teacherId,subjectId]);
+  if (!existing.rowCount) throw new HttpError(400, "This subject has no schedule for the selected term yet. Create it in the Schedule tab first.");
+  const weeks = Math.max(...existing.rows.map((r) => r.week_number));
+  const ref = existing.rows[0];
+  const refDate = new Date(`${ref.due}T12:00:00Z`);
+  const monday = new Date(refDate);
+  monday.setUTCDate(monday.getUTCDate() - ((refDate.getUTCDay() + 6) % 7) - (ref.week_number - 1) * 7);
+  const settings = await conn.query("SELECT to_char(start_date,'YYYY-MM-DD') AS s FROM lesson_plan_term_settings WHERE term_number=$1", [term]);
+  const first = settings.rowCount && settings.rows[0].s ? new Date(`${settings.rows[0].s}T12:00:00Z`) : null;
+  const wanted = new Map();
+  for (let w = 1; w <= weeks; w++) for (const wd of weekdays) {
+    const date = new Date(monday); date.setUTCDate(date.getUTCDate() + (w - 1) * 7 + (wd - 1));
+    if (first && date < first) continue;
+    wanted.set(date.toISOString().slice(0, 10), w);
+  }
+  const have = new Set(existing.rows.map((r) => r.due));
+  await conn.query(`DELETE FROM lesson_plan_generated_tasks t WHERE t.term_number=$1 AND t.teacher_id=$2 AND t.subject_id=$3
+    AND NOT (to_char(t.due_date,'YYYY-MM-DD') = ANY($4::text[])) AND NOT EXISTS (SELECT 1 FROM lesson_plan_uploads x WHERE x.task_id=t.id)`, [term,teacherId,subjectId,[...wanted.keys()]]);
+  // Park remaining rows on high day numbers so renumbering cannot collide.
+  await conn.query(`UPDATE lesson_plan_generated_tasks SET day_number=day_number+1000 WHERE term_number=$1 AND teacher_id=$2 AND subject_id=$3`, [term,teacherId,subjectId]);
+  let n = 0;
+  for (const [due, w] of wanted) {
+    if (have.has(due)) continue;
+    await conn.query(`INSERT INTO lesson_plan_generated_tasks(term_number,week_number,day_number,teacher_id,subject_id,due_date)
+      VALUES($1,$2,$3,$4,$5,$6::date)`, [term,w,2000 + (n++),teacherId,subjectId,due]);
+  }
+  await conn.query(`UPDATE lesson_plan_generated_tasks t SET day_number=r.rn FROM (
+      SELECT id, ROW_NUMBER() OVER (PARTITION BY week_number ORDER BY due_date) AS rn FROM lesson_plan_generated_tasks
+      WHERE term_number=$1 AND teacher_id=$2 AND subject_id=$3) r WHERE t.id=r.id`, [term,teacherId,subjectId]);
 }
 
 async function handleLessonPlanRoutes(request, response, url, actor) {
@@ -671,10 +856,15 @@ async function handleLessonPlanRoutes(request, response, url, actor) {
     const body = await parseJson(request), assignmentId = Number(editAssignment[1]), teacherId = Number(body.teacherId);
     const subjectName = String(body.subjectName || "").trim();
     if (!Number.isInteger(teacherId) || teacherId < 1 || !subjectName || subjectName.length > 160) throw new HttpError(400, "Choose an active teacher and enter a subject name of 1–160 characters.");
+    // The teacher/subject change and the days taught are saved together, so a failure never leaves half an edit.
+    const wantsDays = Array.isArray(body.weekdays);
+    const term = Number(body.termNumber);
+    const weekdays = wantsDays ? parseWeekdays(body.weekdays) : null;
+    if (wantsDays && ![1,2,3].includes(term)) throw new HttpError(400, "Choose Term 1, 2, or 3.");
     const conn = await pool.connect();
     try {
       await conn.query("BEGIN");
-      const existing = await conn.query(`SELECT a.id,a.teacher_id,a.subject_id,s.name AS subject_name FROM lesson_plan_subject_assignments a JOIN subjects s ON s.id=a.subject_id WHERE a.id=$1 FOR UPDATE`, [assignmentId]);
+      const existing = await conn.query(`SELECT a.id,a.teacher_id,a.subject_id,s.name AS subject_name FROM lesson_plan_subject_assignments a JOIN subjects s ON s.id=a.subject_id WHERE a.id=$1 FOR UPDATE OF a`, [assignmentId]);
       if (!existing.rowCount) throw new HttpError(404, "Teacher–subject assignment not found.");
       const targetTeacher = await conn.query("SELECT id FROM users WHERE id=$1 AND role='teacher' AND active=TRUE", [teacherId]);
       if (!targetTeacher.rowCount) throw new HttpError(400, "Choose an active user whose role is Teacher.");
@@ -685,6 +875,9 @@ async function handleLessonPlanRoutes(request, response, url, actor) {
       await conn.query(`UPDATE lesson_plan_subject_assignments SET teacher_id=$1 WHERE id=$2`, [teacherId,assignmentId]);
       await conn.query(`UPDATE lesson_plan_generated_tasks SET teacher_id=$1 WHERE subject_id=$2 AND teacher_id=$3`, [teacherId,current.subject_id,current.teacher_id]);
       await conn.query(`UPDATE lesson_plan_uploads SET teacher_id=$1 WHERE task_id IN (SELECT id FROM lesson_plan_generated_tasks WHERE subject_id=$2)`, [teacherId,current.subject_id]);
+      await conn.query(`UPDATE lesson_plan_upload_versions SET teacher_id=$1 WHERE task_id IN (SELECT id FROM lesson_plan_generated_tasks WHERE subject_id=$2)`, [teacherId,current.subject_id]);
+      if (wantsDays) await applyWeekdays(conn, assignmentId, term, weekdays);
+      await audit(conn, actor.id, "lessonplan.assignment_updated", "assignment", assignmentId);
       await conn.query("COMMIT");
     } catch(e) { await conn.query("ROLLBACK"); throw e; } finally { conn.release(); }
     sendJson(response, 200, { ok: true }); return true;
@@ -693,46 +886,12 @@ async function handleLessonPlanRoutes(request, response, url, actor) {
   if (daysAssignment && request.method === "PUT") {
     ensureSameOrigin(request); requireRole(actor, admin);
     const body = await parseJson(request), assignmentId = Number(daysAssignment[1]), term = Number(body.termNumber);
-    const weekdays = [...new Set((Array.isArray(body.weekdays) ? body.weekdays : []).map(Number))].sort((x, y) => x - y);
+    const weekdays = parseWeekdays(body.weekdays);
     if (![1,2,3].includes(term)) throw new HttpError(400, "Choose Term 1, 2, or 3.");
-    if (!weekdays.length || weekdays.some((d) => !Number.isInteger(d) || d < 1 || d > 5)) throw new HttpError(400, "Choose at least one instruction day from Monday to Friday.");
     const conn = await pool.connect();
     try {
       await conn.query("BEGIN");
-      const a = await conn.query("SELECT teacher_id,subject_id FROM lesson_plan_subject_assignments WHERE id=$1 FOR UPDATE", [assignmentId]);
-      if (!a.rowCount) throw new HttpError(404, "Teacher–subject assignment not found.");
-      const { teacher_id: teacherId, subject_id: subjectId } = a.rows[0];
-      const existing = await conn.query(`SELECT id,week_number,to_char(due_date,'YYYY-MM-DD') AS due FROM lesson_plan_generated_tasks
-        WHERE term_number=$1 AND teacher_id=$2 AND subject_id=$3 ORDER BY week_number,due_date`, [term,teacherId,subjectId]);
-      if (!existing.rowCount) throw new HttpError(400, "This subject has no schedule for the selected term yet. Create it in the Schedule tab first.");
-      const weeks = Math.max(...existing.rows.map((r) => r.week_number));
-      const ref = existing.rows[0];
-      const refDate = new Date(`${ref.due}T12:00:00Z`);
-      const monday = new Date(refDate);
-      monday.setUTCDate(monday.getUTCDate() - ((refDate.getUTCDay() + 6) % 7) - (ref.week_number - 1) * 7);
-      const settings = await conn.query("SELECT to_char(start_date,'YYYY-MM-DD') AS s FROM lesson_plan_term_settings WHERE term_number=$1", [term]);
-      const first = settings.rowCount && settings.rows[0].s ? new Date(`${settings.rows[0].s}T12:00:00Z`) : null;
-      const wanted = new Map();
-      for (let w = 1; w <= weeks; w++) for (const wd of weekdays) {
-        const date = new Date(monday); date.setUTCDate(date.getUTCDate() + (w - 1) * 7 + (wd - 1));
-        if (first && date < first) continue;
-        wanted.set(date.toISOString().slice(0, 10), w);
-      }
-      const have = new Set(existing.rows.map((r) => r.due));
-      // Remove days that are no longer taught, but never delete a day that already has a submission.
-      await conn.query(`DELETE FROM lesson_plan_generated_tasks t WHERE t.term_number=$1 AND t.teacher_id=$2 AND t.subject_id=$3
-        AND NOT (to_char(t.due_date,'YYYY-MM-DD') = ANY($4::text[])) AND NOT EXISTS (SELECT 1 FROM lesson_plan_uploads x WHERE x.task_id=t.id)`, [term,teacherId,subjectId,[...wanted.keys()]]);
-      // Park remaining rows on high day numbers so renumbering cannot collide.
-      await conn.query(`UPDATE lesson_plan_generated_tasks SET day_number=day_number+1000 WHERE term_number=$1 AND teacher_id=$2 AND subject_id=$3`, [term,teacherId,subjectId]);
-      let n = 0;
-      for (const [due, w] of wanted) {
-        if (have.has(due)) continue;
-        await conn.query(`INSERT INTO lesson_plan_generated_tasks(term_number,week_number,day_number,teacher_id,subject_id,due_date)
-          VALUES($1,$2,$3,$4,$5,$6::date)`, [term,w,2000 + (n++),teacherId,subjectId,due]);
-      }
-      await conn.query(`UPDATE lesson_plan_generated_tasks t SET day_number=r.rn FROM (
-          SELECT id, ROW_NUMBER() OVER (PARTITION BY week_number ORDER BY due_date) AS rn FROM lesson_plan_generated_tasks
-          WHERE term_number=$1 AND teacher_id=$2 AND subject_id=$3) r WHERE t.id=r.id`, [term,teacherId,subjectId]);
+      await applyWeekdays(conn, assignmentId, term, weekdays);
       await conn.query("COMMIT");
     } catch(e) { await conn.query("ROLLBACK"); throw e; } finally { conn.release(); }
     sendJson(response, 200, { ok: true }); return true;
@@ -797,10 +956,13 @@ async function handleLessonPlanRoutes(request, response, url, actor) {
       u.display_name AS teacher_name,s.name AS subject_name,x.id AS upload_id,x.file_name,x.file_size,
       CASE WHEN x.id IS NOT NULL THEN x.status WHEN t.due_date < CURRENT_DATE THEN 'Overdue' ELSE 'Awaiting Upload' END AS status,
       x.admin_feedback,x.admin_revision_file_name,x.submitted_at,
+      COALESCE(x.flag_codes,'') AS flag_codes,COALESCE(x.flag_reason,'') AS flag_reason,COALESCE(x.appeal_note,'') AS appeal_note,
+      r.original_submitted_at AS retained_submitted_at,
       (x.submitted_at::date > t.due_date) AS submitted_late,
       (SELECT COUNT(*)::int FROM lesson_plan_upload_versions v WHERE v.task_id=t.id) AS revision_count
       FROM lesson_plan_generated_tasks t JOIN users u ON u.id=t.teacher_id JOIN subjects s ON s.id=t.subject_id
       LEFT JOIN lesson_plan_uploads x ON x.task_id=t.id
+      LEFT JOIN lesson_plan_retained_dates r ON r.task_id=t.id
       WHERE t.term_number=$1 AND ($2 OR t.teacher_id=$3)
         AND EXISTS (
           SELECT 1 FROM lesson_plan_subject_assignments a
@@ -820,34 +982,88 @@ async function handleLessonPlanRoutes(request, response, url, actor) {
     const data = Buffer.from(body.file.data, "base64");
     if (!data.length || data.length > 8*1024*1024) throw new HttpError(413, "PDF files must be no larger than 8 MB.");
     if (data.subarray(0,5).toString("ascii") !== "%PDF-") throw new HttpError(400, "The uploaded file does not appear to be a valid PDF.");
-    const task = await pool.query("SELECT id,due_date,(due_date < CURRENT_DATE) AS is_late FROM lesson_plan_generated_tasks WHERE id=$1 AND teacher_id=$2", [uploadMatch[1],actor.id]);
+    const taskId = uploadMatch[1];
+    const task = await pool.query(`SELECT t.id,t.due_date,s.name AS subject_name,
+        (t.due_date < CURRENT_DATE) AS is_late_now, (r.original_submitted_at::date > t.due_date) AS is_late_retained, r.original_submitted_at
+      FROM lesson_plan_generated_tasks t JOIN subjects s ON s.id=t.subject_id
+      LEFT JOIN lesson_plan_retained_dates r ON r.task_id=t.id
+      WHERE t.id=$1 AND t.teacher_id=$2`, [taskId,actor.id]);
     if (!task.rowCount) throw new HttpError(404, "Lesson-plan task not found for your account.");
-    const status = task.rows[0].is_late ? "Late" : "Submitted";
+    const taskRow = task.rows[0];
+    const resubmit = body.resubmit === true;
+    // What may this teacher do with the current submission?
+    const assertCanUpload = (currentRow) => {
+      if (!currentRow) return;
+      const priorStatus = String(currentRow.status || "").toLowerCase();
+      if (priorStatus === "for revision") return;
+      if (["submitted","late"].includes(priorStatus)) {
+        if (resubmit) return;
+        throw new HttpError(409, "Your lesson plan is awaiting administrator review. Use Resubmit if you need to replace it.");
+      }
+      throw new HttpError(409, priorStatus === "approved" || priorStatus === "completed"
+        ? "This lesson plan has already been approved. Contact the administrator if another submission is required."
+        : "This lesson plan cannot be replaced right now.");
+    };
+    const before = await pool.query("SELECT status FROM lesson_plan_uploads WHERE task_id=$1", [taskId]);
+    assertCanUpload(before.rows[0]);
+
+    // Does this look like a lesson plan, and is it a file that was already handed in?
+    const hash = sha256Hex(data);
+    const flags = contentFlags(analyzePdf(data));
+    const sameFile = await pool.query(
+      `SELECT x.teacher_id, s.name AS subject_name, to_char(t.due_date,'Mon DD, YYYY') AS due
+       FROM lesson_plan_uploads x JOIN lesson_plan_generated_tasks t ON t.id=x.task_id JOIN subjects s ON s.id=t.subject_id
+       WHERE x.file_hash=$1 AND x.task_id<>$2 LIMIT 1`, [hash, taskId]);
+    const sameVersion = await pool.query(
+      `SELECT 1 FROM lesson_plan_upload_versions v WHERE v.file_hash=$1 AND v.task_id=$2
+       UNION ALL SELECT 1 FROM lesson_plan_uploads x WHERE x.file_hash=$1 AND x.task_id=$2 LIMIT 1`, [hash, taskId]);
+    if (sameFile.rowCount) {
+      const other = sameFile.rows[0];
+      flags.push({ code: "duplicate", message: String(other.teacher_id) === String(actor.id)
+        ? `This exact file was already submitted for ${other.subject_name} (${other.due}).`
+        : "This exact file was already submitted by another teacher." });
+    } else if (sameVersion.rowCount) {
+      flags.push({ code: "duplicate", message: "This is the same file you already uploaded for this day." });
+    }
+    const appealed = body.appeal === true;
+    if (flags.length && !appealed) {
+      // Nothing is saved yet: the teacher is told what looks wrong and may appeal.
+      sendJson(response, 200, { ok: false, needsConfirmation: true, flags: flags.map((f) => ({ code: f.code, message: f.message })) });
+      return true;
+    }
+    const flagCodes = flags.map((f) => f.code).join(",");
+    const flagReason = flags.map((f) => f.message).join(" ").slice(0, 1000);
+    const appealNote = flags.length ? String(body.appealNote || "").trim().slice(0, 500) : "";
+
     const conn = await pool.connect();
+    let status;
     try {
       await conn.query("BEGIN");
-      const current = await conn.query("SELECT id,task_id,teacher_id,file_name,mime_type,file_size,file_data,status,admin_feedback,admin_revision_file_name,admin_revision_file_mime,admin_revision_file_size,admin_revision_file_data,submitted_at FROM lesson_plan_uploads WHERE task_id=$1 FOR UPDATE", [uploadMatch[1]]);
-      let version = 1;
+      const current = await conn.query("SELECT id,task_id,teacher_id,file_name,mime_type,file_size,file_data,file_hash,status,admin_feedback,admin_revision_file_name,admin_revision_file_mime,admin_revision_file_size,admin_revision_file_data,submitted_at FROM lesson_plan_uploads WHERE task_id=$1 FOR UPDATE", [taskId]);
+      assertCanUpload(current.rows[0]);
+      // Keeping the original passing date only applies to the first upload after an admin deletion.
+      const keepDate = !current.rowCount && taskRow.original_submitted_at;
+      const late = keepDate ? !!taskRow.is_late_retained : !!taskRow.is_late_now;
+      status = late ? "Late" : "Submitted";
+      const submittedAt = keepDate ? taskRow.original_submitted_at : new Date();
       if (current.rowCount) {
-        const priorStatus = String(current.rows[0].status || "").toLowerCase();
-        if (priorStatus !== "for revision") {
-          throw new HttpError(409, priorStatus === "approved"
-            ? "This lesson plan has already been approved. Contact the administrator if another submission is required."
-            : "Your lesson plan is awaiting administrator review. You can upload a replacement only after the administrator requests a revision.");
-        }
-        const count = await conn.query("SELECT COALESCE(MAX(version_number),0)::int AS n FROM lesson_plan_upload_versions WHERE task_id=$1", [uploadMatch[1]]);
-        version = count.rows[0].n + 1;
+        // Replacing a submission (revision or resubmit): archive the old one; the passing date becomes now.
+        const count = await conn.query("SELECT COALESCE(MAX(version_number),0)::int AS n FROM lesson_plan_upload_versions WHERE task_id=$1", [taskId]);
+        const version = count.rows[0].n + 1;
         const old = current.rows[0];
-        await conn.query(`INSERT INTO lesson_plan_upload_versions(task_id,teacher_id,file_name,mime_type,file_size,file_data,status,admin_feedback,admin_revision_file_name,admin_revision_file_mime,admin_revision_file_size,admin_revision_file_data,submitted_at,version_number)
-          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`, [old.task_id,old.teacher_id,old.file_name,old.mime_type,old.file_size,old.file_data,old.status,old.admin_feedback,old.admin_revision_file_name,old.admin_revision_file_mime,old.admin_revision_file_size,old.admin_revision_file_data,old.submitted_at,version]);
-        await conn.query(`UPDATE lesson_plan_uploads SET file_name=$1,mime_type='application/pdf',file_size=$2,file_data=$3,status=$4,admin_feedback='',admin_revision_file_name='',admin_revision_file_size=0,admin_revision_file_data=NULL,submitted_at=NOW(),reviewed_by=NULL,reviewed_at=NULL WHERE task_id=$5`, [fileName,data.length,data,status,uploadMatch[1]]);
+        await conn.query(`INSERT INTO lesson_plan_upload_versions(task_id,teacher_id,file_name,mime_type,file_size,file_data,file_hash,status,admin_feedback,admin_revision_file_name,admin_revision_file_mime,admin_revision_file_size,admin_revision_file_data,submitted_at,version_number)
+          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`, [old.task_id,old.teacher_id,old.file_name,old.mime_type,old.file_size,old.file_data,old.file_hash,old.status,old.admin_feedback,old.admin_revision_file_name,old.admin_revision_file_mime,old.admin_revision_file_size,old.admin_revision_file_data,old.submitted_at,version]);
+        await conn.query(`UPDATE lesson_plan_uploads SET file_name=$1,mime_type='application/pdf',file_size=$2,file_data=$3,file_hash=$4,status=$5,admin_feedback='',admin_revision_file_name='',admin_revision_file_size=0,admin_revision_file_data=NULL,submitted_at=NOW(),reviewed_by=NULL,reviewed_at=NULL,flag_codes=$6,flag_reason=$7,appeal_note=$8 WHERE task_id=$9`,
+          [fileName,data.length,data,hash,status,flagCodes,flagReason,appealNote,taskId]);
       } else {
-        await conn.query(`INSERT INTO lesson_plan_uploads(task_id,teacher_id,file_name,mime_type,file_size,file_data,status,admin_feedback,submitted_at,reviewed_by,reviewed_at)
-          VALUES($1,$2,$3,'application/pdf',$4,$5,$6,'',NOW(),NULL,NULL)`, [uploadMatch[1],actor.id,fileName,data.length,data,status]);
+        await conn.query(`INSERT INTO lesson_plan_uploads(task_id,teacher_id,file_name,mime_type,file_size,file_data,file_hash,status,admin_feedback,submitted_at,reviewed_by,reviewed_at,flag_codes,flag_reason,appeal_note)
+          VALUES($1,$2,$3,'application/pdf',$4,$5,$6,$7,'',$8,NULL,NULL,$9,$10,$11)`, [taskId,actor.id,fileName,data.length,data,hash,status,submittedAt,flagCodes,flagReason,appealNote]);
+        await conn.query("DELETE FROM lesson_plan_retained_dates WHERE task_id=$1", [taskId]);
       }
+      await audit(conn, actor.id, resubmit ? "lessonplan.resubmitted" : "lessonplan.uploaded", "lesson_plan_task", taskId);
       await conn.query("COMMIT");
     } catch(e) { await conn.query("ROLLBACK"); throw e; } finally { conn.release(); }
-    sendJson(response, 201, {ok:true,status}); return true;
+    sendJson(response, 201, {ok:true,status,flagged:flags.length>0}); return true;
   }
   const historyMatch = url.pathname.match(/^\/api\/lesson-plans\/tasks\/(\d+)\/history$/);
   if (historyMatch && request.method === "GET") {
@@ -883,6 +1099,43 @@ async function handleLessonPlanRoutes(request, response, url, actor) {
     const f=result.rows[0];
     response.writeHead(200,{"Content-Type":f.admin_revision_file_mime,"Content-Disposition":`attachment; filename*=UTF-8''${encodeURIComponent(f.admin_revision_file_name)}`,"Cache-Control":"no-store","X-Content-Type-Options":"nosniff"});
     response.end(f.admin_revision_file_data); return true;
+  }
+
+  const deleteUploadMatch = url.pathname.match(/^\/api\/lesson-plans\/uploads\/(\d+)$/);
+  if (deleteUploadMatch && request.method === "DELETE") {
+    // Administrators may delete any submission, approved or not. The teacher is notified and,
+    // by the admin's choice, either keeps the original passing date or gets a new one on re-upload.
+    ensureSameOrigin(request); requireRole(actor, admin);
+    const body = await parseJson(request);
+    if (typeof body.keepDate !== "boolean") throw new HttpError(400, "Choose whether to keep the original passing date or reset it.");
+    const reason = String(body.reason || "").trim().slice(0, 500);
+    await inTransaction(async (connection) => {
+      const found = await connection.query(
+        `SELECT x.id,x.task_id,x.teacher_id,x.submitted_at,s.name AS subject_name,t.term_number,t.week_number,t.day_number,
+                to_char(t.due_date,'Mon DD, YYYY') AS due, to_char(x.submitted_at AT TIME ZONE $2,'Mon DD, YYYY') AS passed
+         FROM lesson_plan_uploads x JOIN lesson_plan_generated_tasks t ON t.id=x.task_id JOIN subjects s ON s.id=t.subject_id
+         WHERE x.id=$1 FOR UPDATE OF x`, [deleteUploadMatch[1], schoolTimeZone]);
+      if (!found.rowCount) throw new HttpError(404, "Lesson-plan submission not found.");
+      const row = found.rows[0];
+      await connection.query("DELETE FROM lesson_plan_upload_versions WHERE task_id=$1", [row.task_id]);
+      await connection.query("DELETE FROM lesson_plan_uploads WHERE id=$1", [row.id]);
+      if (body.keepDate) {
+        await connection.query(
+          `INSERT INTO lesson_plan_retained_dates(task_id,original_submitted_at,deleted_by) VALUES($1,$2,$3)
+           ON CONFLICT (task_id) DO UPDATE SET original_submitted_at=EXCLUDED.original_submitted_at,deleted_by=EXCLUDED.deleted_by,deleted_at=NOW()`,
+          [row.task_id, row.submitted_at, actor.id]);
+      } else {
+        await connection.query("DELETE FROM lesson_plan_retained_dates WHERE task_id=$1", [row.task_id]);
+      }
+      const label = `${row.subject_name} · Term ${row.term_number}, Week ${row.week_number}, Day ${row.day_number} (due ${row.due})`;
+      const dateLine = body.keepDate
+        ? `Your original passing date (${row.passed}) is kept. Please upload the lesson plan again.`
+        : "The passing date was reset. Please upload the lesson plan again; the date you upload it becomes the new passing date.";
+      await notify(connection, row.teacher_id, "lesson_plan_deleted", "An administrator removed a lesson plan",
+        `${label}. ${dateLine}${reason ? ` Reason: ${reason}` : ""}`);
+      await audit(connection, actor.id, body.keepDate ? "lessonplan.deleted_keep_date" : "lessonplan.deleted_reset_date", "lesson_plan_upload", row.id);
+    });
+    sendJson(response, 200, { ok: true }); return true;
   }
 
   const confirmMatch = url.pathname.match(/^\/api\/lesson-plans\/uploads\/(\d+)\/confirm$/);
@@ -1047,6 +1300,309 @@ async function handleAncillaryRoutes(request, response, url, actor) {
   return false;
 }
 
+
+const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
+const toMinutes = (hhmm) => Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3, 5));
+const LEAVE_TYPES = ["Sick Leave", "Vacation Leave", "Emergency / Personal Leave", "Maternity / Paternity Leave", "Study Leave", "Special Privilege Leave", "Other"];
+const isAdminRole = (user) => ["admin", "developer"].includes(user.role);
+
+async function handleMemoRoutes(request, response, url, actor) {
+  if (!url.pathname.startsWith("/api/memos")) return false;
+  if (url.pathname === "/api/memos" && request.method === "GET") {
+    const result = await pool.query(
+      "SELECT id, title, description, file_name, file_size, uploader_name, created_at FROM memos ORDER BY created_at DESC LIMIT 500",
+    );
+    sendJson(response, 200, { memos: result.rows });
+    return true;
+  }
+  if (url.pathname === "/api/memos" && request.method === "POST") {
+    ensureSameOrigin(request); requireRole(actor, ["admin", "developer"]);
+    const body = await parseJson(request);
+    const title = requiredText(body.title, "Title", 180);
+    const description = body.description ? requiredText(body.description, "Description", 2000) : "";
+    if (!body.file || typeof body.file.name !== "string" || typeof body.file.data !== "string") throw new HttpError(400, "Choose a PDF memo to upload.");
+    const fileName = path.basename(body.file.name).slice(0, 255);
+    const declaredType = String(body.file.type || "").toLowerCase();
+    if (!fileName.toLowerCase().endsWith(".pdf") || (declaredType && declaredType !== "application/pdf")) throw new HttpError(400, "Memos must be PDF files.");
+    const data = Buffer.from(body.file.data, "base64");
+    if (!data.length || data.length > 8 * 1024 * 1024) throw new HttpError(413, "Memo PDFs must be no larger than 8 MB.");
+    if (data.subarray(0, 5).toString("ascii") !== "%PDF-") throw new HttpError(400, "The uploaded file does not appear to be a valid PDF.");
+    const created = await inTransaction(async (connection) => {
+      const result = await connection.query(
+        `INSERT INTO memos (title, description, file_name, file_size, file_data, uploaded_by, uploader_name)
+         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+        [title, description, fileName, data.length, data, actor.id, actor.display_name],
+      );
+      await audit(connection, actor.id, "memo.created", "memo", result.rows[0].id);
+      return result.rows[0];
+    });
+    sendJson(response, 201, { ok: true, id: created.id });
+    return true;
+  }
+  const fileMatch = url.pathname.match(/^\/api\/memos\/(\d+)\/file$/);
+  if (fileMatch && request.method === "GET") {
+    const result = await pool.query("SELECT file_name, file_data FROM memos WHERE id = $1", [fileMatch[1]]);
+    if (!result.rowCount) throw new HttpError(404, "Memo not found.");
+    response.writeHead(200, {
+      "Content-Type": "application/pdf",
+      "Content-Disposition": `inline; filename*=UTF-8''${encodeURIComponent(result.rows[0].file_name)}`,
+      "Cache-Control": "private, no-store",
+      "X-Content-Type-Options": "nosniff",
+    });
+    response.end(result.rows[0].file_data);
+    return true;
+  }
+  const deleteMatch = url.pathname.match(/^\/api\/memos\/(\d+)$/);
+  if (deleteMatch && request.method === "DELETE") {
+    ensureSameOrigin(request); requireRole(actor, ["admin", "developer"]);
+    await inTransaction(async (connection) => {
+      const result = await connection.query("DELETE FROM memos WHERE id = $1 RETURNING id", [deleteMatch[1]]);
+      if (!result.rowCount) throw new HttpError(404, "Memo not found.");
+      await audit(connection, actor.id, "memo.deleted", "memo", deleteMatch[1]);
+    });
+    sendJson(response, 200, { ok: true });
+    return true;
+  }
+  return false;
+}
+
+async function handleNotificationRoutes(request, response, url, actor) {
+  if (!url.pathname.startsWith("/api/notifications")) return false;
+  if (url.pathname === "/api/notifications" && request.method === "GET") {
+    const result = await pool.query(
+      `SELECT id, kind, title, body, created_at FROM notifications
+       WHERE user_id = $1 AND read_at IS NULL ORDER BY created_at DESC LIMIT 50`, [actor.id]);
+    sendJson(response, 200, { notifications: result.rows });
+    return true;
+  }
+  if (url.pathname === "/api/notifications/read-all" && request.method === "POST") {
+    ensureSameOrigin(request);
+    await pool.query("UPDATE notifications SET read_at = NOW() WHERE user_id = $1 AND read_at IS NULL", [actor.id]);
+    sendJson(response, 200, { ok: true });
+    return true;
+  }
+  const match = url.pathname.match(/^\/api\/notifications\/(\d+)\/read$/);
+  if (match && request.method === "POST") {
+    ensureSameOrigin(request);
+    await pool.query("UPDATE notifications SET read_at = NOW() WHERE id = $1 AND user_id = $2 AND read_at IS NULL", [match[1], actor.id]);
+    sendJson(response, 200, { ok: true });
+    return true;
+  }
+  return false;
+}
+
+const scheduleColumns = `s.id, s.teacher_id, s.weekday, to_char(s.time_in,'HH24:MI') AS time_in, to_char(s.time_out,'HH24:MI') AS time_out, s.subject, s.section`;
+const scheduleOut = (row) => ({
+  id: row.id, teacherId: row.teacher_id, teacherName: row.teacher_name, weekday: row.weekday,
+  timeIn: row.time_in, timeOut: row.time_out, subject: row.subject, section: row.section,
+});
+
+async function handleScheduleRoutes(request, response, url, actor) {
+  if (!url.pathname.startsWith("/api/schedule") && !url.pathname.startsWith("/api/sections")) return false;
+  const isAdmin = isAdminRole(actor);
+  if (!isAdmin && actor.role !== "teacher") throw new HttpError(403, "Schedules are available to teachers and administrators.");
+
+  // Who is the schedule for? Teachers: always themselves. Admins: the chosen teacher.
+  const resolveTeacher = async (value) => {
+    const teacherId = isAdmin ? Number(value) : Number(actor.id);
+    if (!Number.isInteger(teacherId) || teacherId < 1) throw new HttpError(400, "Choose a teacher.");
+    const found = await pool.query("SELECT id, display_name FROM users WHERE id = $1 AND role = 'teacher' AND active = TRUE", [teacherId]);
+    if (!found.rowCount) throw new HttpError(404, "Teacher not found.");
+    return found.rows[0];
+  };
+
+  if (url.pathname === "/api/schedule" && request.method === "GET") {
+    const wantsOne = url.searchParams.get("teacherId");
+    if (!isAdmin && wantsOne && String(wantsOne) !== String(actor.id)) throw new HttpError(403, "You can only view your own schedule here.");
+    const teacherFilter = isAdmin ? (wantsOne ? Number(wantsOne) : null) : Number(actor.id);
+    const result = await pool.query(
+      `SELECT ${scheduleColumns}, u.display_name AS teacher_name FROM teacher_schedule s JOIN users u ON u.id = s.teacher_id
+       WHERE u.active = TRUE AND ($1::bigint IS NULL OR s.teacher_id = $1) ORDER BY s.teacher_id, s.weekday, s.time_in`, [teacherFilter]);
+    sendJson(response, 200, { entries: result.rows.map(scheduleOut) });
+    return true;
+  }
+
+  if (url.pathname === "/api/schedule/options" && request.method === "GET") {
+    const teacher = await resolveTeacher(url.searchParams.get("teacherId"));
+    const [subjects, sections] = await Promise.all([
+      pool.query("SELECT DISTINCT name FROM subjects WHERE teacher_id = $1 ORDER BY name", [teacher.id]),
+      pool.query("SELECT id, name FROM school_sections ORDER BY LOWER(name)"),
+    ]);
+    sendJson(response, 200, { subjects: subjects.rows.map((r) => r.name), sections: sections.rows, leaveTypes: LEAVE_TYPES });
+    return true;
+  }
+
+  const readEntry = async (body, ignoreId = null) => {
+    const teacher = await resolveTeacher(body.teacherId);
+    const weekday = Number(body.weekday);
+    if (!Number.isInteger(weekday) || weekday < 1 || weekday > 5) throw new HttpError(400, "Choose a day from Monday to Friday.");
+    const timeIn = String(body.timeIn || ""), timeOut = String(body.timeOut || "");
+    if (!TIME_PATTERN.test(timeIn) || !TIME_PATTERN.test(timeOut)) throw new HttpError(400, "Choose both a time in and a time out.");
+    if (toMinutes(timeOut) <= toMinutes(timeIn)) throw new HttpError(400, "Time out must be later than time in.");
+    const subject = requiredText(body.subject, "Subject", 160);
+    const section = requiredText(body.section, "Section", 80);
+    const clash = await pool.query(
+      `SELECT subject, section, to_char(time_in,'HH24:MI') AS time_in, to_char(time_out,'HH24:MI') AS time_out
+       FROM teacher_schedule WHERE teacher_id = $1 AND weekday = $2 AND time_in < $4::time AND time_out > $3::time
+         AND ($5::bigint IS NULL OR id <> $5) LIMIT 1`, [teacher.id, weekday, timeIn, timeOut, ignoreId]);
+    if (clash.rowCount) {
+      const c = clash.rows[0];
+      throw new HttpError(409, `That time overlaps with ${c.subject} (${c.section}), ${c.time_in}–${c.time_out}, on the same day.`);
+    }
+    return { teacher, weekday, timeIn, timeOut, subject, section };
+  };
+
+  if (url.pathname === "/api/schedule" && request.method === "POST") {
+    ensureSameOrigin(request);
+    const body = await parseJson(request);
+    const entry = await readEntry(body);
+    const id = await inTransaction(async (connection) => {
+      const created = await connection.query(
+        `INSERT INTO teacher_schedule (teacher_id, weekday, time_in, time_out, subject, section) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+        [entry.teacher.id, entry.weekday, entry.timeIn, entry.timeOut, entry.subject, entry.section]);
+      await connection.query("INSERT INTO school_sections (name) VALUES ($1) ON CONFLICT DO NOTHING", [entry.section]);
+      await audit(connection, actor.id, "schedule.created", "teacher_schedule", created.rows[0].id);
+      return created.rows[0].id;
+    });
+    sendJson(response, 201, { ok: true, id });
+    return true;
+  }
+
+  const entryMatch = url.pathname.match(/^\/api\/schedule\/(\d+)$/);
+  if (entryMatch) {
+    const existing = await pool.query("SELECT id, teacher_id FROM teacher_schedule WHERE id = $1", [entryMatch[1]]);
+    if (!existing.rowCount) throw new HttpError(404, "Schedule entry not found.");
+    if (!isAdmin && String(existing.rows[0].teacher_id) !== String(actor.id)) throw new HttpError(403, "You can only change your own schedule.");
+    if (request.method === "PUT") {
+      ensureSameOrigin(request);
+      const body = await parseJson(request);
+      const entry = await readEntry({ ...body, teacherId: existing.rows[0].teacher_id }, Number(entryMatch[1]));
+      await inTransaction(async (connection) => {
+        await connection.query(
+          `UPDATE teacher_schedule SET weekday = $2, time_in = $3, time_out = $4, subject = $5, section = $6 WHERE id = $1`,
+          [entryMatch[1], entry.weekday, entry.timeIn, entry.timeOut, entry.subject, entry.section]);
+        await connection.query("INSERT INTO school_sections (name) VALUES ($1) ON CONFLICT DO NOTHING", [entry.section]);
+        await audit(connection, actor.id, "schedule.updated", "teacher_schedule", entryMatch[1]);
+      });
+      sendJson(response, 200, { ok: true });
+      return true;
+    }
+    if (request.method === "DELETE") {
+      ensureSameOrigin(request);
+      await inTransaction(async (connection) => {
+        await connection.query("DELETE FROM teacher_schedule WHERE id = $1", [entryMatch[1]]);
+        await audit(connection, actor.id, "schedule.deleted", "teacher_schedule", entryMatch[1]);
+      });
+      sendJson(response, 200, { ok: true });
+      return true;
+    }
+  }
+
+  const sectionMatch = url.pathname.match(/^\/api\/sections\/(\d+)$/);
+  if (sectionMatch && request.method === "DELETE") {
+    ensureSameOrigin(request); requireRole(actor, ["admin", "developer"]);
+    await pool.query("DELETE FROM school_sections WHERE id = $1", [sectionMatch[1]]);
+    sendJson(response, 200, { ok: true });
+    return true;
+  }
+  return false;
+}
+
+async function handleAttendanceRoutes(request, response, url, actor) {
+  if (!url.pathname.startsWith("/api/attendance")) return false;
+
+  if (url.pathname === "/api/attendance/me" && request.method === "GET") {
+    requireRole(actor, ["teacher"]);
+    const now = schoolNow();
+    const result = await pool.query(
+      `SELECT status, leave_type, details, logged_at, auto_recorded FROM attendance_records WHERE teacher_id = $1 AND attendance_date = $2`,
+      [actor.id, now.date]);
+    const record = result.rows[0] ?? null;
+    sendJson(response, 200, {
+      date: now.date, time: now.time, leaveTypes: LEAVE_TYPES,
+      record: record && { status: record.status, leaveType: record.leave_type, details: record.details, loggedAt: record.logged_at, auto: record.auto_recorded },
+      // Signing in after 7:29 AM without a record for today asks for attendance.
+      needsPrompt: !record && now.minutes > lateAfterMinutes,
+    });
+    return true;
+  }
+
+  if (url.pathname === "/api/attendance/me" && request.method === "POST") {
+    ensureSameOrigin(request); requireRole(actor, ["teacher"]);
+    const body = await parseJson(request);
+    const status = String(body.status || "");
+    if (!["present", "leave", "travel"].includes(status)) throw new HttpError(400, "Choose Present, On Leave or On Travel.");
+    let leaveType = "", details = String(body.details || "").trim().slice(0, 300);
+    if (status === "leave") {
+      leaveType = String(body.leaveType || "");
+      if (!LEAVE_TYPES.includes(leaveType)) throw new HttpError(400, "Choose the type of leave.");
+      if (leaveType === "Other" && !details) throw new HttpError(400, "Tell us briefly what kind of leave this is.");
+    } else if (status === "travel") {
+      if (!details) throw new HttpError(400, "Add a short detail about your travel (where and why).");
+    } else {
+      details = "";
+    }
+    const now = schoolNow();
+    await pool.query(
+      `INSERT INTO attendance_records (teacher_id, attendance_date, status, leave_type, details, auto_recorded)
+       VALUES ($1, $2, $3, $4, $5, FALSE)
+       ON CONFLICT (teacher_id, attendance_date) DO UPDATE SET
+         status = EXCLUDED.status, leave_type = EXCLUDED.leave_type, details = EXCLUDED.details, auto_recorded = FALSE,
+         logged_at = CASE WHEN attendance_records.status <> EXCLUDED.status THEN NOW() ELSE attendance_records.logged_at END,
+         updated_at = NOW()`,
+      [actor.id, now.date, status, leaveType, details]);
+    sendJson(response, 200, { ok: true });
+    return true;
+  }
+
+  if (url.pathname === "/api/attendance" && request.method === "GET") {
+    requireRole(actor, ["admin", "developer", "teacher"]);
+    const now = schoolNow();
+    const requested = url.searchParams.get("date") || now.date;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(requested) || Number.isNaN(new Date(`${requested}T12:00:00Z`).getTime())) throw new HttpError(400, "Choose a valid date.");
+    const jsDay = new Date(`${requested}T12:00:00Z`).getUTCDay();
+    const weekday = jsDay === 0 ? 7 : jsDay;
+    const isToday = requested === now.date;
+    const teachers = await pool.query(
+      `SELECT u.id, u.display_name, u.username, a.status, a.leave_type, a.details, a.logged_at, a.auto_recorded
+       FROM users u LEFT JOIN attendance_records a ON a.teacher_id = u.id AND a.attendance_date = $1
+       WHERE u.role = 'teacher' AND u.active = TRUE ORDER BY u.display_name`, [requested]);
+    const entries = weekday <= 5 ? await pool.query(
+      `SELECT ${scheduleColumns} FROM teacher_schedule s WHERE s.weekday = $1 ORDER BY s.time_in`, [weekday]) : { rows: [] };
+    const byTeacher = new Map();
+    for (const row of entries.rows) {
+      const list = byTeacher.get(String(row.teacher_id)) ?? [];
+      list.push({ id: row.id, timeIn: row.time_in, timeOut: row.time_out, subject: row.subject, section: row.section });
+      byTeacher.set(String(row.teacher_id), list);
+    }
+    const out = teachers.rows.map((row) => {
+      const schedule = byTeacher.get(String(row.id)) ?? [];
+      const mine = isAdminRole(actor) || String(row.id) === String(actor.id);
+      let current = null;
+      if (isToday && row.status === "present") {
+        if (weekday > 5) current = { state: "none" };
+        else {
+          const slot = schedule.find((e) => toMinutes(e.timeIn) <= now.minutes && now.minutes < toMinutes(e.timeOut));
+          current = slot ? { state: "class", entry: slot } : { state: "vacant" };
+        }
+      }
+      return {
+        id: row.id, name: row.display_name, username: row.username,
+        record: row.status ? {
+          status: row.status,
+          // Other teachers see only the status; leave type and travel details stay with the person and administrators.
+          leaveType: mine ? row.leave_type : "", details: mine ? row.details : "",
+          loggedAt: row.logged_at, auto: row.auto_recorded,
+        } : null,
+        schedule, current,
+      };
+    });
+    sendJson(response, 200, { date: requested, today: now.date, time: now.time, weekday, isToday, teachers: out });
+    return true;
+  }
+  return false;
+}
+
 async function handleApi(request, response, url) {
   try {
     if (await authenticate(request, response, url)) return;
@@ -1060,6 +1616,10 @@ async function handleApi(request, response, url) {
       handleAnnouncementRoutes,
       handleLessonPlanRoutes,
       handleAncillaryRoutes,
+      handleMemoRoutes,
+      handleNotificationRoutes,
+      handleScheduleRoutes,
+      handleAttendanceRoutes,
     ];
     for (const handler of handlers) {
       if (await handler(request, response, url, actor)) return;
@@ -1068,10 +1628,13 @@ async function handleApi(request, response, url) {
   } catch (error) {
     const status = error instanceof HttpError ? error.status : error.code === "23505" ? 409 : 500;
     if (status >= 500) console.error("API request failed:", request.method, url.pathname, error.message);
+    const uniqueMessage = error.constraint === "users_username_lower_unique"
+      ? "That username is already in use." : "That item already exists.";
     sendJson(response, status, {
       error: status === 500 ? "The server could not complete the request."
-        : status === 409 ? "That username is already in use."
-          : error.message,
+        : error instanceof HttpError ? error.message
+          : status === 409 ? uniqueMessage
+            : error.message,
     });
   }
 }
@@ -1139,6 +1702,9 @@ async function start() {
     throw new Error("No active developer account exists. Configure BOOTSTRAP_DEVELOPERS in the ignored local .env file.");
   }
   await pool.query("DELETE FROM sessions WHERE expires_at <= NOW()");
+  await purgeExpiredAnnouncements();
+  // Expired announcements (and their photos) are removed on a timer as well as on every read.
+  setInterval(() => purgeExpiredAnnouncements().catch((error) => console.error("Announcement cleanup failed:", error.message)), 10 * 60 * 1000).unref();
 
   const server = createServer((request, response) => {
     handleRequest(request, response).catch((error) => {

@@ -13,8 +13,13 @@ const viewTitles = {
   "lesson-plans": ["Lesson Plans", "Schedule, submit and review daily lesson plans."],
   ancillary: ["Ancillary Tasks", "Manually assigned tasks and document submissions."],
   summary: ["Summary", "Teachers, their subjects and lesson-plan submissions at a glance."],
-  settings: ["Settings", "Update your account security settings."],
+  settings: ["Settings", "Your profile, sign-in details and class schedule."],
 };
+
+// New tabs register themselves from features.js: registerView(name, [title, subtitle], { allowed, onEnter }).
+const viewRegistry = {};
+function registerView(name, titles, options = {}) { viewTitles[name] = titles; viewRegistry[name] = options; }
+const portalHooks = { onLogin: [], onLogout: [] };
 
 let currentUser = null;
 let currentView = "overview";
@@ -79,6 +84,7 @@ function showToast(message) {
 }
 
 function showLogin() {
+  portalHooks.onLogout.forEach((hook) => { try { hook(); } catch (_) {} });
   currentUser = null;
   document.querySelector("#dashboard-app").hidden = true;
   document.querySelector("#login-screen").hidden = false;
@@ -101,7 +107,7 @@ function updateNavigation() {
   const canManage = userCanManageAccounts();
   document.querySelector("#users-nav").hidden = !canManage;
   document.querySelector("#users-nav-label").textContent = currentUser.role === "developer" ? "Admins" : "Accounts";
-  document.querySelector("#announcement-compose-panel").hidden = currentUser.role === "student";
+  document.querySelectorAll("[data-roles]").forEach((el) => { el.hidden = !el.dataset.roles.split(",").includes(currentUser.role); });
   document.querySelector("#lesson-plans-nav").hidden = !["admin","developer","teacher"].includes(currentUser.role);
   const lpAdminRole = ["admin","developer"].includes(currentUser.role);
   document.querySelector("#summary-nav").hidden = !lpAdminRole;
@@ -136,6 +142,7 @@ function goToView(view) {
   if (view === "summary" && !isLpAdmin()) return;
   if (view === "ancillary" && currentUser.role === "student") return;
   if (view === "lesson-plans" && currentUser.role === "student") return;
+  if (viewRegistry[view]?.allowed && !viewRegistry[view].allowed()) return;
   currentView = view;
   for (const section of document.querySelectorAll(".portal-view")) {
     section.hidden = section.id !== `view-${view}`;
@@ -159,6 +166,8 @@ function goToView(view) {
   if (view === "summary") refreshSummary();
   if (view === "ancillary") refreshAncillary();
   if (view === "lesson-plans") refreshLessonPlans();
+  if (view !== "lesson-plans") closeLpDrawer();
+  viewRegistry[view]?.onEnter?.();
 }
 
 function renderOverview() {
@@ -255,10 +264,27 @@ function populateRecipientOptions() {
   ).join("");
 }
 
+function announcementEndLabel(item) {
+  if (!item.expires_at) return "No end date";
+  const end = new Date(item.expires_at);
+  const hours = (end.getTime() - Date.now()) / 3600000;
+  const when = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(end);
+  if (hours <= 0) return "Ending now";
+  if (hours < 24) return `Ends today · ${when}`;
+  return `Ends in ${Math.ceil(hours / 24)} day${Math.ceil(hours / 24) === 1 ? "" : "s"} · ${when}`;
+}
+
 function renderAnnouncements() {
   document.querySelector("#announcement-list").innerHTML = announcements.length
-    ? announcements.map((item) => `<article class="content-card"><div class="content-card-heading"><h3>${escapeHtml(item.title)}</h3><span>${formatDate(item.created_at)}</span></div><p>${escapeHtml(item.body)}</p><small>Posted by ${escapeHtml(item.author_name || "School account")}</small>${(["admin","developer"].includes(currentUser.role) || String(item.author_id) === String(currentUser.id)) ? `<div class="row-actions"><button class="action-link danger-link" type="button" data-delete-announcement="${escapeHtml(item.id)}">Delete announcement</button></div>` : ""}</article>`).join("")
-    : emptyFeed("No announcements have been published.");
+    ? announcements.map((item) => {
+      const photos = item.images || [];
+      const gallery = photos.length
+        ? `<div class="pubmat-gallery pubmat-${Math.min(photos.length, 4)}">${photos.map((photo) => `<button type="button" class="pubmat-photo" data-photo="${escapeHtml(photo.id)}" data-photo-title="${escapeHtml(item.title)}" aria-label="Enlarge photo for ${escapeHtml(item.title)}"><img loading="lazy" src="/api/announcements/images/${encodeURIComponent(photo.id)}" alt="${escapeHtml(item.title)}" /></button>`).join("")}</div>`
+        : "";
+      const canDelete = ["admin", "developer"].includes(currentUser.role) || String(item.author_id) === String(currentUser.id);
+      return `<article class="content-card announcement-card${photos.length ? " has-photos" : ""}">${gallery}<div class="announcement-text"><div class="content-card-heading"><h3>${escapeHtml(item.title)}</h3><span>${formatDate(item.created_at)}</span></div><p>${escapeHtml(item.body)}</p><small>Posted by ${escapeHtml(item.author_name || "School account")} · <span class="announcement-end">${escapeHtml(announcementEndLabel(item))}</span></small>${canDelete ? `<div class="row-actions"><button class="action-link danger-link" type="button" data-delete-announcement="${escapeHtml(item.id)}">Delete announcement</button></div>` : ""}</div></article>`;
+    }).join("")
+    : emptyFeed("No announcements right now.");
 }
 
 /* ---------- Lesson plans: status model ---------- */
@@ -267,6 +293,7 @@ const LP_WEEKDAYS=["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
 function lpInfo(t){
   const s=String(t.status||"").toLowerCase();
   const late=!!t.submitted_late;
+  if(!t.upload_id && t.retained_submitted_at) return {tone:"revision",label:"Re-upload requested",short:"Re-upload"};
   if(s==="overdue") return {tone:"overdue",label:"Overdue",short:"Overdue"};
   if(s==="completed") return late?{tone:"done-late",label:"Completed late",short:"Done late"}:{tone:"done",label:"Completed on time",short:"Done"};
   if(s==="approved") return late?{tone:"done-late",label:"Approved · completed late",short:"Done late"}:{tone:"done",label:"Approved · on time",short:"Approved"};
@@ -276,6 +303,10 @@ function lpInfo(t){
   return {tone:"pending",label:"Awaiting upload",short:"To do"};
 }
 const lpDay=t=>String(t.due_date).slice(0,10);
+// Yellow warning triangle: shown to admins while a flagged upload (blank, not a lesson plan, or duplicate) is not yet approved.
+const LP_TRI='<svg class="lp-tri" viewBox="0 0 24 24" role="img" aria-label="Warning"><path class="lp-tri-body" d="M12 2.6 1.9 20.4h20.2z"/><path class="lp-tri-mark" d="M12 9.2v5.3M12 17.3v.2"/></svg>';
+const lpFlagged=t=>!!t.upload_id && !!t.flag_codes && !["approved","completed"].includes(String(t.status||"").toLowerCase());
+const lpTriBadge=(n,label)=>n>0?`<span class="lp-tri-badge" title="${n} ${label||"flagged"}">${LP_TRI}${n>1?`<b>${n}</b>`:""}</span>`:"";
 function lpDateLabel(iso,opts){ const [y,m,d]=iso.split("-").map(Number); return new Intl.DateTimeFormat(undefined,opts||{weekday:"long",month:"long",day:"numeric",year:"numeric"}).format(new Date(y,m-1,d)); }
 function lpChip(t){ const i=lpInfo(t); return `<span class="lp-chip lp-${i.tone}">${i.label}</span>`; }
 function lpTodayIso(){ const n=new Date(); return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,"0")}-${String(n.getDate()).padStart(2,"0")}`; }
@@ -294,6 +325,7 @@ function isLpAdmin() { return ["admin","developer"].includes(currentUser?.role);
 function lpTerm(){ return document.querySelector("#lp-view-term")?.value || ""; }
 
 function setLpTab(tab){
+  if(tab!=="progress") closeLpDrawer();
   const view=document.querySelector("#view-lesson-plans");
   view.dataset.lpTab=tab;
   view.querySelectorAll("[data-lp-pane]").forEach(el=>el.classList.toggle("lp-pane-off",el.dataset.lpPane!==tab));
@@ -377,8 +409,9 @@ function lpCalendarMarkup(scope, tasks){
     const todayCls=iso===today?" is-today":"";
     if(!list){ cells+=`<div class="lp-cal-cell lp-cal-none${todayCls}"><span class="lp-cal-num">${d}</span></div>`; continue; }
     const t=list[0], info=lpInfo(t);
+    const flagged=scope==="admin" && list.some(lpFlagged);
     const wk=list.length>1?`${list.length} plans`:`Wk ${t.week_number} · D${t.day_number}`;
-    cells+=`<button type="button" class="lp-cal-cell lp-cal-task lp-${info.tone}${todayCls}" data-lp-day="${iso}" data-lp-scope="${scope}" aria-label="${escapeHtml(lpDateLabel(iso))}: ${escapeHtml(info.label)}"><span class="lp-cal-num">${d}</span><span class="lp-cal-wk">${wk}</span><span class="lp-cal-status">${info.short}</span></button>`;
+    cells+=`<button type="button" class="lp-cal-cell lp-cal-task lp-${info.tone}${todayCls}" data-lp-day="${iso}" data-lp-scope="${scope}" aria-label="${escapeHtml(lpDateLabel(iso))}: ${escapeHtml(info.label)}${flagged?" (warning: check this upload)":""}"><span class="lp-cal-num">${d}</span>${flagged?`<span class="lp-cal-tri" title="Needs a closer look: ${escapeHtml(list.find(lpFlagged).flag_reason||"flagged upload")}">${LP_TRI}</span>`:""}<span class="lp-cal-wk">${wk}</span><span class="lp-cal-status">${info.short}</span></button>`;
   }
   const counts={}; tasks.forEach(t=>{const k=lpInfo(t).tone; counts[k]=(counts[k]||0)+1;});
   const done=(counts.done||0)+(counts["done-late"]||0);
@@ -393,19 +426,59 @@ function lpCalendarMarkup(scope, tasks){
 }
 
 function lpAdminVisibleTasks(){
-  return lessonPlanTasks.filter(t=> selectedLpTeacherId!=null
-    ? (String(t.teacher_id)===String(selectedLpTeacherId) && (selectedLpSubjectId==null || String(t.subject_id)===String(selectedLpSubjectId)))
-    : (selectedLpSubject && t.subject_name===selectedLpSubject && (selectedLpSubjectId==null || String(t.subject_id)===String(selectedLpSubjectId))));
+  return lessonPlanTasks.filter(t=>String(t.teacher_id)===String(selectedLpTeacherId) && (selectedLpSubjectId==null || String(t.subject_id)===String(selectedLpSubjectId)));
+}
+
+/* Admin calendar: a drawer that slides in from the right. Pick a teacher, then move between their subjects. */
+const lpDrawer={open:false};
+function closeLpDrawer(){
+  lpDrawer.open=false;
+  const panel=document.querySelector("#lesson-plan-task-panel"); if(!panel) return;
+  panel.classList.remove("is-open"); panel.setAttribute("aria-hidden","true");
+  document.querySelector("#lp-drawer-scrim")?.classList.remove("is-open");
+}
+function openLpDrawer(teacherId,subjectId){
+  if(!lpTerm()){ setGlobalError("Choose a term first to view lesson plans."); return; }
+  selectedLpTeacherId=teacherId!=null?String(teacherId):null;
+  selectedLpSubjectId=subjectId!=null?String(subjectId):null;
+  lpDrawer.open=true;
+  const panel=document.querySelector("#lesson-plan-task-panel");
+  panel.classList.add("is-open"); panel.setAttribute("aria-hidden","false");
+  document.querySelector("#lp-drawer-scrim").classList.add("is-open");
+  renderLpDrawer();
+  panel.querySelector("select")?.focus({preventScroll:true});
+}
+function renderLpDrawer(){
+  const panel=document.querySelector("#lesson-plan-task-panel");
+  const select=document.querySelector("#lp-drawer-teacher");
+  const teachers=new Map();
+  lessonPlanTasks.forEach(t=>{ if(!teachers.has(String(t.teacher_id))) teachers.set(String(t.teacher_id),{id:String(t.teacher_id),name:t.teacher_name,review:0,flagged:0}); const g=teachers.get(String(t.teacher_id)); if(lpNeedsReview(t)) g.review++; if(lpFlagged(t)) g.flagged++; });
+  const list=[...teachers.values()].sort((a,b)=>a.name.localeCompare(b.name));
+  document.querySelector("#lp-drawer-kicker").textContent=`Term ${lpTerm()||"–"} · Lesson plans`;
+  if(!list.length){
+    select.innerHTML='<option value="">No teachers scheduled</option>'; document.querySelector("#lp-drawer-subjects").innerHTML="";
+    document.querySelector("#lp-task-detail-heading").textContent="Lesson-plan calendar";
+    document.querySelector("#lesson-plan-task-list").innerHTML=emptyFeed("No teacher has a lesson-plan schedule for this term yet."); return;
+  }
+  if(!teachers.has(String(selectedLpTeacherId))) selectedLpTeacherId=list[0].id;
+  select.innerHTML=list.map(g=>`<option value="${escapeHtml(g.id)}" ${g.id===String(selectedLpTeacherId)?"selected":""}>${escapeHtml(g.name)}${g.flagged?" \u26A0":""}${g.review?` (${g.review} to review)`:""}</option>`).join("");
+  const subjects=new Map();
+  lessonPlanTasks.filter(t=>String(t.teacher_id)===String(selectedLpTeacherId)).forEach(t=>{ const k=String(t.subject_id); if(!subjects.has(k)) subjects.set(k,{id:k,name:t.subject_name,review:0,flagged:0,overdue:0}); const g=subjects.get(k); if(lpNeedsReview(t)) g.review++; if(lpFlagged(t)) g.flagged++; if(lpInfo(t).tone==="overdue") g.overdue++; });
+  const subjectList=[...subjects.values()].sort((a,b)=>a.name.localeCompare(b.name));
+  if(!subjects.has(String(selectedLpSubjectId))) selectedLpSubjectId=subjectList[0]?.id??null;
+  const teacherName=teachers.get(String(selectedLpTeacherId)).name;
+  const current=subjects.get(String(selectedLpSubjectId));
+  document.querySelector("#lp-task-detail-heading").textContent=current?`${teacherName} · ${current.name}`:teacherName;
+  document.querySelector("#lp-drawer-subjects").innerHTML=subjectList.map(g=>`<button type="button" role="tab" aria-selected="${g.id===String(selectedLpSubjectId)}" class="lp-subject-pill${g.id===String(selectedLpSubjectId)?" is-active":""}" data-lp-drawer-subject="${escapeHtml(g.id)}">${escapeHtml(g.name)}${g.flagged?`<span class="lp-pill-tri">${LP_TRI}</span>`:""}${g.review?`<span class="lp-pill-alert" title="${g.review} to review">${g.review}</span>`:""}</button>`).join("");
+  document.querySelector("#lesson-plan-task-list").innerHTML=lpCalendarMarkup("admin",lpAdminVisibleTasks());
 }
 
 function renderLessonPlanTasks() {
   const admin=isLpAdmin();
   const term=lpTerm();
   if(admin){
-    const panel=document.querySelector("#lesson-plan-task-panel");
-    const host=document.querySelector("#lesson-plan-task-list");
-    if(!term||!selectedLpSubject){ panel.hidden=true; host.innerHTML=""; }
-    else { panel.hidden=false; host.innerHTML=lpCalendarMarkup("admin",lpAdminVisibleTasks()); }
+    if(!term && lpDrawer.open) closeLpDrawer();
+    if(lpDrawer.open) renderLpDrawer();
   } else {
     const host=document.querySelector("#lp-teacher-task-list");
     if(!term){ host.innerHTML=""; return; }
@@ -429,22 +502,28 @@ function lpTaskControls(t, admin){
   const revisionLink=t.admin_revision_file_name?`<a class="action-link" href="/api/lesson-plans/uploads/${t.upload_id}/revision-file" target="_blank" rel="noopener">Revision instructions PDF: ${escapeHtml(t.admin_revision_file_name)}</a>`:"";
   const feedback=t.admin_feedback?`<p class="lp-feedback">${escapeHtml(t.admin_feedback)}</p>`:"";
   const history=Number(t.revision_count)>0?`<details><summary>View previous revisions (${t.revision_count})</summary><div class="lp-history" data-history-task="${t.id}">Loading revision history…</div></details>`:"";
-  const subInfo=submitted?`<p class="lp-meta">Submitted ${formatDate(t.submitted_at)}${t.submitted_late?" · after the due date":""}${Number(t.revision_count)>0?` · ${t.revision_count} earlier revision(s)`:""}</p>`:"";
+  const subInfo=submitted?`<p class="lp-meta">Passed ${formatDate(t.submitted_at)}${t.submitted_late?" · after the due date":""}${Number(t.revision_count)>0?` · ${t.revision_count} earlier revision(s)`:""}</p>`:"";
+  const pdfLink=submitted?`<a class="action-link lp-pdf-link" href="/api/lesson-plans/uploads/${t.upload_id}/file" target="_blank" rel="noopener">Open PDF: ${escapeHtml(t.file_name)}</a>`:"";
+  const flagBanner=lpFlagged(t)?`<div class="lp-flag-banner" role="note">${LP_TRI}<div><strong>${admin?"Needs a closer look":"Submitted with a warning"}</strong><p>${escapeHtml(t.flag_reason||"This upload was flagged.")}</p>${t.appeal_note?`<p><em>${admin?"Teacher's note":"Your note"}:</em> ${escapeHtml(t.appeal_note)}</p>`:""}<small>${admin?"The warning clears when you approve this lesson plan.":"The warning clears once the administrator approves it."}</small></div></div>`:"";
+  const retained=(!submitted&&t.retained_submitted_at)?`<p class="lp-note">${admin?"Submission deleted. The teacher keeps the original passing date":"An administrator removed your earlier submission. Your original passing date"} (${escapeHtml(formatDate(t.retained_submitted_at))}) ${admin?"and must upload again.":"is kept. Please upload again."}</p>`:"";
   if(admin){
-    if(!submitted) return `<p class="lp-note">${state==="overdue"?"This lesson plan is overdue. The teacher has not uploaded it yet.":"Waiting for the teacher to upload."}</p>`;
+    if(!submitted) return `${retained||`<p class="lp-note">${state==="overdue"?"This lesson plan is overdue. The teacher has not uploaded it yet.":"Waiting for the teacher to upload."}</p>`}`;
     const review=["submitted","late"].includes(state)
       ? `<form class="lp-review-form" data-upload-id="${t.upload_id}"><label class="login-field">Decision<select name="status"><option>Approved</option><option>For Revision</option></select></label><label class="login-field lp-revision-file-field" hidden>Upload revision instructions (PDF only, max 8 MB)<input name="revisionFile" type="file" accept="application/pdf,.pdf"></label><button class="button button-primary" type="submit">Save review decision</button></form>`
       : `<p class="lp-note">${state==="approved"?"Approved — waiting for the teacher to confirm.":state==="completed"?"Completed and confirmed by the teacher.":state==="for revision"?"Revision requested — waiting for the teacher's new upload.":"This submission is not awaiting review."}</p>`;
-    return `<a class="action-link lp-pdf-link" href="/api/lesson-plans/uploads/${t.upload_id}/file" target="_blank" rel="noopener">Open PDF: ${escapeHtml(t.file_name)}</a>${revisionLink?`<p>${revisionLink}</p>`:""}${feedback}${subInfo}${review}${history}`;
+    const del=`<button type="button" class="button button-danger-outline lp-delete-upload" data-upload-id="${t.upload_id}" data-task-label="${escapeHtml(`${t.teacher_name} · ${t.subject_name} · ${lpDateLabel(lpDay(t),{month:"short",day:"numeric",year:"numeric"})}`)}">Delete this lesson plan…</button>`;
+    return `${flagBanner}${pdfLink}${revisionLink?`<p>${revisionLink}</p>`:""}${feedback}${subInfo}${review}${history}${del}`;
   }
+  const uploadForm=(label,button,resubmit)=>`<form class="lp-upload-form" data-task-id="${t.id}"${resubmit?' data-resubmit="1"':""}><label class="login-field">${label} (PDF only, max 8 MB)<input type="file" name="file" accept="application/pdf,.pdf" required></label><button class="button button-primary" type="submit">${button}</button></form>`;
   if(submitted && state!=="for revision"){
+    // The teacher can always open what they passed. Resubmit is only offered while it is waiting for review.
     const action=state==="approved"?`<p class="lp-note">The administrator approved this lesson plan. Confirm to mark it completed.</p><button class="button button-primary lp-confirm-approval" data-upload-id="${t.upload_id}" type="button">Confirm approval and complete</button>`
       :state==="completed"?`<p class="lp-note">Completed. Your approval has been confirmed.</p>`
-      :`<p class="lp-note">Under review — locked until the administrator approves it or requests a revision.</p>`;
-    return `${feedback}${subInfo}${action}${history}`;
+      :`<p class="lp-note">Under review. Passed the wrong file? You can resubmit — the passing date becomes the day you resubmit.</p><details class="lp-resubmit"><summary class="button button-secondary">Resubmit lesson plan</summary>${uploadForm("Choose the replacement lesson plan","Resubmit lesson plan",true)}</details>`;
+    return `${flagBanner}${pdfLink}${feedback}${subInfo}${action}${history}`;
   }
   const rev=state==="for revision"?(revisionLink?`<p>Download ${revisionLink}</p>`:`<p class="lp-note">Check with the administrator for revision instructions.</p>`):"";
-  return `${feedback}${rev}<form class="lp-upload-form" data-task-id="${t.id}"><label class="login-field">${submitted?"Upload revised lesson plan":"Upload lesson plan"} (PDF only, max 8 MB)<input type="file" name="file" accept="application/pdf,.pdf" required></label><button class="button button-primary" type="submit">${submitted?"Upload revised lesson plan":"Submit daily lesson plan"}</button></form>${history}`;
+  return `${retained}${submitted?`${flagBanner}${pdfLink}`:""}${feedback}${rev}${uploadForm(submitted?"Upload revised lesson plan":"Upload lesson plan",submitted?"Upload revised lesson plan":"Submit daily lesson plan",false)}${history}`;
 }
 function renderLpDialog(){
   if(!lpOpenDay) return;
@@ -539,10 +618,10 @@ function renderLpAssignments(teachers){
   host.setAttribute("data-acc-root","");
   host.innerHTML=lpGroupedMarkup(entries,g=>{
     const tReview=g.items.reduce((n,a)=>n+(reviewBySubject.get(`${a.teacher_id}|${a.subject_id}`)||0),0);
-    const head=`<span class="acc-name">${escapeHtml(g.name)}</span>${lpDot(tReview)}<small>${g.items.length} subject${g.items.length>1?"s":""}</small>`;
+    const tFlag=lessonPlanTasks.filter(t=>String(t.teacher_id)===String(g.id)&&lpFlagged(t)).length;const head=`<span class="acc-name">${escapeHtml(g.name)}</span>${lpDot(tReview)}${lpTriBadge(tFlag)}<small>${g.items.length} subject${g.items.length>1?"s":""}</small>`;
     const daysOf=(a)=>{const set=new Set();lessonPlanTasks.forEach(t=>{if(String(t.teacher_id)===String(a.teacher_id)&&String(t.subject_id)===String(a.subject_id)){const [y,m,d]=lpDay(t).split("-").map(Number);const wd=new Date(y,m-1,d).getDay();if(wd>=1&&wd<=5)set.add(wd);}});return set;};
     const dayChips=(a)=>{const cur=daysOf(a);return `<fieldset class="day-picker lp-edit-days" data-orig="${[...cur].sort().join(",")}"><legend>Days taught \u00b7 Term ${term}</legend>${[[1,"Mon"],[2,"Tue"],[3,"Wed"],[4,"Thu"],[5,"Fri"]].map(([v,l])=>`<label class="day-chip"><input type="checkbox" name="weekday" value="${v}" ${cur.has(v)?"checked":""}/><span>${l}</span></label>`).join("")}</fieldset>`;};
-    const body=g.items.map(a=>{const st=stats.get(`${a.teacher_id}|${a.subject_id}`);const rv=reviewBySubject.get(`${a.teacher_id}|${a.subject_id}`)||0;return `<div class="lp-assignment-row"><div><strong>${escapeHtml(a.subject_name)}${lpDot(rv)}</strong><small>${st.submitted} of ${st.total} submitted</small></div><div class="row-actions"><button type="button" class="action-link" data-lp-assignment-open="${a.teacher_id}|${a.subject_id}|${escapeHtml(a.subject_name)}">View plans</button><button type="button" class="action-link" data-lp-edit="${a.id}">Edit</button><button type="button" class="action-link danger-link" data-lp-remove="${a.id}">Delete</button></div></div><form class="lp-assignment-edit" data-lp-edit-form="${a.id}" hidden><label class="login-field">Teacher<select name="teacherId" required>${teachers.map(u=>`<option value="${u.id}" ${String(u.id)===String(a.teacher_id)?"selected":""}>${escapeHtml(u.displayName)}</option>`).join("")}</select></label><label class="login-field">Subject name<input name="subjectName" maxlength="160" required value="${escapeHtml(a.subject_name)}"></label>${dayChips(a)}<div class="form-actions"><button class="button button-primary" type="submit">Save changes</button><button class="button button-secondary" type="button" data-lp-cancel-edit="${a.id}">Cancel</button></div><small>Uploaded files and revision history are retained. Days with a submission are never removed.</small></form>`;}).join("");
+    const body=g.items.map(a=>{const st=stats.get(`${a.teacher_id}|${a.subject_id}`);const rv=reviewBySubject.get(`${a.teacher_id}|${a.subject_id}`)||0;const fl=lessonPlanTasks.filter(t=>String(t.teacher_id)===String(a.teacher_id)&&String(t.subject_id)===String(a.subject_id)&&lpFlagged(t)).length;return `<div class="lp-assignment-row"><div><strong>${escapeHtml(a.subject_name)}${lpDot(rv)}${lpTriBadge(fl)}</strong><small>${st.submitted} of ${st.total} submitted</small></div><div class="row-actions"><button type="button" class="action-link" data-lp-assignment-open="${a.teacher_id}|${a.subject_id}|${escapeHtml(a.subject_name)}">View plans</button><button type="button" class="action-link" data-lp-edit="${a.id}">Edit</button><button type="button" class="action-link danger-link" data-lp-remove="${a.id}">Delete</button></div></div><form class="lp-assignment-edit" data-lp-edit-form="${a.id}" hidden><label class="login-field">Teacher<select name="teacherId" required>${teachers.map(u=>`<option value="${u.id}" ${String(u.id)===String(a.teacher_id)?"selected":""}>${escapeHtml(u.displayName)}</option>`).join("")}</select></label><label class="login-field">Subject name<input name="subjectName" maxlength="160" required value="${escapeHtml(a.subject_name)}"></label>${dayChips(a)}<div class="form-actions"><button class="button button-primary" type="submit">Save changes</button><button class="button button-secondary" type="button" data-lp-cancel-edit="${a.id}">Cancel</button></div><small>Uploaded files and revision history are retained. Days with a submission are never removed.</small></form>`;}).join("");
     return accItem("assign",g.id,head,body,"content-card lp-assignment-card");
   });
 }
@@ -654,7 +733,7 @@ async function loadDashboard(user) {
   updateNavigation();
   let saved = "overview";
   try { saved = sessionStorage.getItem("portalView") || "overview"; } catch (_) {}
-  goToView(saved === "lesson-plans" || saved === "summary" || saved === "ancillary" || saved === "overview" || saved === "settings" || saved === "messages" || saved === "announcements" ? saved : "overview");
+  goToView(viewTitles[saved] ? saved : "overview");
   if (currentView !== saved) goToView("overview");
   try {
     await refreshOverview();
@@ -663,6 +742,7 @@ async function loadDashboard(user) {
   } catch (error) {
     setGlobalError(error.message);
   }
+  for (const hook of portalHooks.onLogin) { try { await hook(user); } catch (error) { console.error(error); } }
 }
 
 function openCreateUser() {
@@ -832,22 +912,14 @@ document.querySelector("#message-list").addEventListener("click", async (event) 
 });
 document.querySelector("#refresh-messages").addEventListener("click", refreshMessages);
 
-document.querySelector("#announcement-form").addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const data = new FormData(event.currentTarget);
-  try {
-    await api("/api/announcements", {
-      method: "POST",
-      body: { title: data.get("title"), body: data.get("body") },
-    });
-    event.currentTarget.reset();
-    await refreshAfterMutation("Announcement published.");
-  } catch (error) {
-    setGlobalError(error.message);
-  }
-});
-
 document.querySelector("#announcement-list").addEventListener("click", async (event) => {
+  const photo = event.target.closest("[data-photo]");
+  if (photo) {
+    document.querySelector("#photo-dialog-img").src = `/api/announcements/images/${encodeURIComponent(photo.dataset.photo)}`;
+    document.querySelector("#photo-dialog-title").textContent = photo.dataset.photoTitle || "Photo";
+    document.querySelector("#photo-dialog").showModal();
+    return;
+  }
   const button = event.target.closest("[data-delete-announcement]"); if (!button) return;
   if (!confirm("Delete this announcement? This cannot be undone.")) return;
   try { await api(`/api/announcements/${encodeURIComponent(button.dataset.deleteAnnouncement)}`, { method: "DELETE" }); await refreshAnnouncements(); showToast("Announcement deleted."); }
@@ -919,23 +991,19 @@ document.querySelector("#summary-search").addEventListener("input",(e)=>{summary
 async function openLpFromNotification(taskId){
   const t=lpNotifTasks.get(String(taskId)); if(!t||!isLpAdmin()) return;
   lpMarkSeen(t);
-  const sel=document.querySelector("#lp-view-term");
-  sel.value=String(t.term_number);
-  selectedLpSubject=t.subject_name; selectedLpTeacherId=t.teacher_id; selectedLpSubjectId=t.subject_id;
+  document.querySelector("#lp-view-term").value=String(t.term_number);
   lpTeacherSubjectId=null; lpCal.admin.key=""; lpCal.teacher.key="";
   goToView("lesson-plans");
   setLpTab("progress");
   await refreshLessonPlans();
-  document.querySelector("#lp-task-detail-heading").textContent=`${t.teacher_name} · ${t.subject_name} · Term ${t.term_number}`;
-  document.querySelector("#lesson-plan-task-panel").hidden=false;
-  renderLessonPlanTasks();
+  openLpDrawer(t.teacher_id,t.subject_id);
   openLpDay("admin",lpDay(t));
   refreshLpNotifications();
 }
 const lpNotifList=document.querySelector("#lp-notification-list");
 lpNotifList.addEventListener("click",(event)=>{const el=event.target.closest("[data-lp-notif]"); if(el) openLpFromNotification(el.dataset.lpNotif);});
 lpNotifList.addEventListener("keydown",(event)=>{if(event.key!=="Enter"&&event.key!==" ")return; const el=event.target.closest("[data-lp-notif]"); if(!el)return; event.preventDefault(); openLpFromNotification(el.dataset.lpNotif);});
-document.querySelector("#lp-view-term").addEventListener("change",()=>{selectedLpSubject=null;selectedLpTeacherId=null;selectedLpSubjectId=null;lpTeacherSubjectId=null;lpCal.teacher.key="";lpCal.admin.key="";document.querySelector("#lp-day-dialog").open&&document.querySelector("#lp-day-dialog").close(); refreshLessonPlans();});
+document.querySelector("#lp-view-term").addEventListener("change",()=>{closeLpDrawer();selectedLpSubject=null;selectedLpTeacherId=null;selectedLpSubjectId=null;lpTeacherSubjectId=null;lpCal.teacher.key="";lpCal.admin.key="";document.querySelector("#lp-day-dialog").open&&document.querySelector("#lp-day-dialog").close(); refreshLessonPlans();});
 document.querySelector("#lp-tabs").addEventListener("click",(event)=>{const b=event.target.closest("[data-lp-tab]");if(b)setLpTab(b.dataset.lpTab);});
 document.querySelector("#lp-day-close").addEventListener("click",()=>document.querySelector("#lp-day-dialog").close());
 document.querySelector("#lp-day-dialog").addEventListener("click",(event)=>{if(event.target===event.currentTarget)event.currentTarget.close();});
@@ -953,36 +1021,96 @@ document.querySelector("#lp-subject-progress").addEventListener("click",(event)=
   const row=event.target.closest("[data-lp-subject]");
   const subject=trigger?.dataset.lpOpenSubject || row?.dataset.lpSubject;
   if(!subject)return;
-  selectedLpSubject=subject; selectedLpTeacherId=null; selectedLpSubjectId=null;
-  document.querySelector("#lp-task-detail-heading").textContent=`${subject} · Term ${document.querySelector("#lp-view-term").value}`;
-  document.querySelector("#lesson-plan-task-panel").hidden=false;
-  renderLessonPlanTasks();
-  document.querySelector("#lesson-plan-task-panel").scrollIntoView({behavior:"smooth",block:"start"});
+  const match=lessonPlanTasks.find(t=>t.subject_name===subject); if(!match)return;
+  openLpDrawer(match.teacher_id,match.subject_id);
 });
 document.querySelector("#lp-subject-progress").addEventListener("keydown",(event)=>{
   if(event.key!=="Enter" && event.key!==" ")return;
   const row=event.target.closest("[data-lp-subject]"); if(!row)return;
   event.preventDefault(); row.querySelector("[data-lp-open-subject]")?.click();
 });
-document.querySelector("#lp-close-details").addEventListener("click",()=>{selectedLpSubject=null;selectedLpTeacherId=null;selectedLpSubjectId=null;document.querySelector("#lesson-plan-task-panel").hidden=true;});
-document.querySelector("#lp-teacher-progress").addEventListener("click",(event)=>{const b=event.target.closest("[data-lp-open-teacher]");if(!b)return;const teacherName=b.dataset.lpOpenTeacher;const match=lessonPlanTasks.find(t=>t.teacher_name===teacherName);if(!match)return;selectedLpSubject=match.subject_name;selectedLpTeacherId=match.teacher_id;selectedLpSubjectId=null;document.querySelector("#lp-task-detail-heading").textContent=`${teacherName} · ${match.subject_name} · Term ${document.querySelector("#lp-view-term").value}`;document.querySelector("#lesson-plan-task-panel").hidden=false;renderLessonPlanTasks();document.querySelector("#lesson-plan-task-panel").scrollIntoView({behavior:"smooth",block:"start"});});
+document.querySelector("#lp-close-details").addEventListener("click",closeLpDrawer);
+document.querySelector("#lp-drawer-scrim").addEventListener("click",closeLpDrawer);
+document.addEventListener("keydown",(event)=>{ if(event.key==="Escape" && lpDrawer.open && !document.querySelector("dialog[open]")) closeLpDrawer(); });
+document.querySelector("#lp-drawer-teacher").addEventListener("change",(event)=>{ selectedLpTeacherId=event.target.value; selectedLpSubjectId=null; renderLpDrawer(); });
+document.querySelector("#lp-drawer-subjects").addEventListener("click",(event)=>{ const b=event.target.closest("[data-lp-drawer-subject]"); if(!b)return; selectedLpSubjectId=b.dataset.lpDrawerSubject; renderLpDrawer(); });
+document.querySelector("#lp-teacher-progress").addEventListener("click",(event)=>{
+  const b=event.target.closest("[data-lp-open-teacher]"); if(!b)return;
+  const match=lessonPlanTasks.find(t=>t.teacher_name===b.dataset.lpOpenTeacher); if(!match)return;
+  openLpDrawer(match.teacher_id,null);
+});
 document.querySelector("#lp-assignment-list").addEventListener("click",async(event)=>{
   const edit=event.target.closest("[data-lp-edit]");
   if(edit){const form=document.querySelector(`[data-lp-edit-form="${edit.dataset.lpEdit}"]`);if(form)form.hidden=!form.hidden;return;}
   const cancel=event.target.closest("[data-lp-cancel-edit]");if(cancel){const form=document.querySelector(`[data-lp-edit-form="${cancel.dataset.lpCancelEdit}"]`);if(form)form.hidden=true;return;}
-  const open=event.target.closest("[data-lp-assignment-open]");if(open){const [teacherId,subjectId,subject]=open.dataset.lpAssignmentOpen.split("|");selectedLpSubject=subject;selectedLpTeacherId=teacherId;selectedLpSubjectId=subjectId;setLpTab("progress");if(!lpTerm())setGlobalError("Choose a term first to view lesson plans.");document.querySelector("#lp-task-detail-heading").textContent=`${subject} · Term ${document.querySelector("#lp-view-term").value}`;document.querySelector("#lesson-plan-task-panel").hidden=false;renderLessonPlanTasks();document.querySelector("#lesson-plan-task-panel").scrollIntoView({behavior:"smooth",block:"start"});return;}
+  const open=event.target.closest("[data-lp-assignment-open]");if(open){const [teacherId,subjectId]=open.dataset.lpAssignmentOpen.split("|");setLpTab("progress");openLpDrawer(teacherId,subjectId);return;}
   const remove=event.target.closest("[data-lp-remove]");if(remove){if(!confirm("Delete this subject for this teacher? Its calendars in ALL terms will be removed. Uploaded PDFs and revision history attached to those tasks will also be permanently deleted."))return;try{await api(`/api/lesson-plans/assignments/${remove.dataset.lpRemove}`,{method:"DELETE"});await refreshLessonPlans();showToast("Assignment deleted.");}catch(e){setGlobalError(e.message);} }
 });
-document.querySelector("#lp-assignment-list").addEventListener("submit",async(event)=>{const form=event.target.closest("[data-lp-edit-form]");if(!form)return;event.preventDefault();const data=new FormData(form);try{
-  const days=[...form.querySelectorAll('input[name="weekday"]:checked')].map(i=>Number(i.value)).sort();
+document.querySelector("#lp-assignment-list").addEventListener("submit",async(event)=>{
+  const form=event.target.closest("[data-lp-edit-form]"); if(!form)return; event.preventDefault();
+  const data=new FormData(form), submit=form.querySelector('button[type="submit"]');
+  let error=form.querySelector(".lp-edit-error");
+  if(!error){ error=document.createElement("p"); error.className="form-error lp-edit-error"; error.setAttribute("role","alert"); form.querySelector(".form-actions").before(error); }
+  error.hidden=true;
+  const fail=(m)=>{ error.textContent=m; error.hidden=false; error.scrollIntoView({block:"nearest"}); };
+  const days=[...form.querySelectorAll('input[name="weekday"]:checked')].map(i=>Number(i.value)).sort((a,b)=>a-b);
   const picker=form.querySelector(".lp-edit-days");
-  if(picker&&!days.length){setGlobalError("Choose at least one day the subject is taught.");return;}
-  await api(`/api/lesson-plans/assignments/${form.dataset.lpEdit}`,{method:"PUT",body:{teacherId:Number(data.get("teacherId")),subjectName:String(data.get("subjectName")).trim()}});
-  if(picker&&days.join(",")!==picker.dataset.orig){await api(`/api/lesson-plans/assignments/${form.dataset.lpEdit}/days`,{method:"PUT",body:{termNumber:Number(lpTerm()),weekdays:days}});}
-  await refreshLessonPlans();showToast("Teacher–subject assignment updated.");}catch(e){setGlobalError(e.message);}});
+  if(picker&&!days.length){ fail("Choose at least one day the subject is taught."); return; }
+  const body={teacherId:Number(data.get("teacherId")),subjectName:String(data.get("subjectName")).trim()};
+  // Days are saved in the same request as the teacher/subject, so one click either saves everything or nothing.
+  if(picker&&days.join(",")!==picker.dataset.orig){ body.termNumber=Number(lpTerm()); body.weekdays=days; }
+  submit.disabled=true;
+  try{ await api(`/api/lesson-plans/assignments/${form.dataset.lpEdit}`,{method:"PUT",body}); await refreshLessonPlans(); await refreshLpNotifications(); showToast("Schedule saved."); }
+  catch(e){ fail(e.message); } finally { submit.disabled=false; }
+});
 document.querySelector("#view-lesson-plans").addEventListener("click",async(event)=>{const button=event.target.closest(".lp-confirm-approval");if(!button)return;if(!confirm("Confirm that you have received the administrator's approval? This will mark the lesson plan as completed."))return;try{await api(`/api/lesson-plans/uploads/${button.dataset.uploadId}/confirm`,{method:"POST",body:{}});await refreshLessonPlans();await refreshLpNotifications();showToast("Approval confirmed. Lesson plan completed.");}catch(e){setGlobalError(e.message);}});
 
 document.querySelector("#view-lesson-plans").addEventListener("change",(event)=>{const select=event.target.closest('.lp-review-form select[name="status"]');if(!select)return;const field=select.closest(".lp-review-form").querySelector(".lp-revision-file-field");if(field){field.hidden=select.value!=="For Revision";const input=field.querySelector("input");if(input)input.required=select.value==="For Revision";}});
+/* Upload flow: the server checks the file. If it looks blank, is not a lesson plan, or was already submitted,
+   it sends back warnings and saves nothing until the teacher appeals ("yes, this is my lesson plan"). */
+let lpPendingUpload=null;
+async function lpSubmitUpload(taskId,file,resubmit,appeal,appealNote){
+  const result=await api(`/api/lesson-plans/tasks/${taskId}/upload`,{method:"POST",body:{file:await fileToPayload(file),resubmit:!!resubmit,appeal:!!appeal,appealNote:appealNote||""}});
+  if(result.needsConfirmation){
+    lpPendingUpload={taskId,file,resubmit};
+    document.querySelector("#lp-warning-file").textContent=file.name;
+    document.querySelector("#lp-warning-list").innerHTML=result.flags.map(f=>`<li>${escapeHtml(f.message)}</li>`).join("");
+    document.querySelector("#lp-warning-form").reset();
+    document.querySelector("#lp-warning-dialog").showModal();
+    return false;
+  }
+  await refreshLessonPlans(); await refreshLpNotifications();
+  showToast(resubmit?"Lesson plan resubmitted. The passing date is now today.":result.flagged?"Submitted with a warning for the administrator to check.":"Lesson plan submitted.");
+  return true;
+}
+document.querySelector("#lp-warning-cancel").addEventListener("click",()=>{lpPendingUpload=null;document.querySelector("#lp-warning-dialog").close();});
+document.querySelector("#lp-warning-form").addEventListener("submit",async(event)=>{
+  event.preventDefault(); if(!lpPendingUpload)return;
+  const {taskId,file,resubmit}=lpPendingUpload, note=new FormData(event.currentTarget).get("appealNote");
+  try{ await lpSubmitUpload(taskId,file,resubmit,true,String(note||"")); lpPendingUpload=null; document.querySelector("#lp-warning-dialog").close(); }
+  catch(e){ document.querySelector("#lp-warning-dialog").close(); setGlobalError(e.message); }
+});
+
+/* Admin: delete a submission (even an approved one), then choose what happens to the passing date. */
+let lpDeleteTarget=null;
+document.querySelector("#view-lesson-plans").addEventListener("click",(event)=>{
+  const b=event.target.closest(".lp-delete-upload"); if(!b)return;
+  lpDeleteTarget=b.dataset.uploadId;
+  document.querySelector("#lp-delete-summary").textContent=b.dataset.taskLabel;
+  document.querySelector("#lp-delete-form").reset();
+  document.querySelector("#lp-delete-dialog").showModal();
+});
+for(const id of ["#lp-delete-cancel","#lp-delete-close"]) document.querySelector(id).addEventListener("click",()=>document.querySelector("#lp-delete-dialog").close());
+document.querySelector("#lp-delete-form").addEventListener("submit",async(event)=>{
+  event.preventDefault(); if(!lpDeleteTarget)return;
+  const data=new FormData(event.currentTarget);
+  try{
+    await api(`/api/lesson-plans/uploads/${lpDeleteTarget}`,{method:"DELETE",body:{keepDate:data.get("keepDate")==="keep",reason:data.get("reason")}});
+    document.querySelector("#lp-delete-dialog").close(); lpDeleteTarget=null;
+    await refreshLessonPlans(); await refreshLpNotifications(); showToast("Lesson plan deleted. The teacher has been notified.");
+  }catch(e){ document.querySelector("#lp-delete-dialog").close(); setGlobalError(e.message); }
+});
+
 document.querySelector("#view-lesson-plans").addEventListener("submit",async(event)=>{
   const uploadForm=event.target.closest(".lp-upload-form");
   const reviewForm=event.target.closest(".lp-review-form");
@@ -992,8 +1120,9 @@ document.querySelector("#view-lesson-plans").addEventListener("submit",async(eve
     if(!file)return;
     if(!file.name.toLowerCase().endsWith(".pdf") || (file.type && file.type!=="application/pdf")){setGlobalError("Please upload a PDF file only.");return;}
     if(file.size>8*1024*1024){setGlobalError("Lesson-plan PDF files must be 8 MB or smaller.");return;}
-    try { await api(`/api/lesson-plans/tasks/${uploadForm.dataset.taskId}/upload`,{method:"POST",body:{file:await fileToPayload(file)}}); await refreshLessonPlans(); await refreshLpNotifications(); showToast("Lesson plan submitted."); }
-    catch(e){setGlobalError(e.message);}
+    const button=uploadForm.querySelector('button[type="submit"]'); button.disabled=true;
+    try { await lpSubmitUpload(uploadForm.dataset.taskId,file,uploadForm.dataset.resubmit==="1",false,""); }
+    catch(e){setGlobalError(e.message);} finally { button.disabled=false; }
   } else if(reviewForm){
     event.preventDefault();
     const data=new FormData(reviewForm);
@@ -1222,4 +1351,7 @@ if (isStaticHost) {
   });
 }
 
-restoreSession();
+document.addEventListener("DOMContentLoaded", restoreSession);
+
+document.querySelector("#photo-dialog-close").addEventListener("click", () => document.querySelector("#photo-dialog").close());
+document.querySelector("#photo-dialog").addEventListener("click", (event) => { if (event.target === event.currentTarget) event.currentTarget.close(); });
