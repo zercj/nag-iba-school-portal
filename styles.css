@@ -863,3 +863,14 @@ body { font-size: 15px; line-height: 1.5; }
 .brand { margin-bottom: 28px; }
 .main-nav { gap: 3px; }
 .nav-link { min-height: 40px; }
+
+/* Multi-day schedule + subject list */
+.schedule-days { padding: 0 0 4px; }
+.schedule-days .day-chip span { min-width: 52px; height: 40px; font-size: 13px; }
+.my-subjects { display: grid; gap: 8px; margin: 4px 17px 10px; padding: 12px 14px; border: 1px solid #e8ecf2; border-radius: 10px; background: #fafbfd; }
+.my-subjects > strong { font-size: 12px; color: #26395c; }
+.subject-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.subject-chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border: 1px solid #dbe3ef; border-radius: 99px; background: #fff; font-size: 12px; color: #34475f; }
+.subject-chip button { padding: 0; border: 0; background: none; color: #b42318; font-size: 15px; line-height: 1; }
+.subject-add-form { display: flex; flex-wrap: wrap; gap: 8px; }
+.subject-add-form input { flex: 1; min-width: 200px; height: 36px; padding: 0 11px; border: 1px solid #e3e8ef; border-radius: 6px; font-size: 12px; }

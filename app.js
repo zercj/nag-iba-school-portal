@@ -499,8 +499,8 @@ function renderLessonPlanTasks() {
 function lpTaskControls(t, admin){
   const submitted=!!t.upload_id;
   const state=String(t.status||"").toLowerCase();
-  const revisionLink=t.admin_revision_file_name?`<a class="action-link" href="/api/lesson-plans/uploads/${t.upload_id}/revision-file" target="_blank" rel="noopener">Revision instructions PDF: ${escapeHtml(t.admin_revision_file_name)}</a>`:"";
-  const feedback=t.admin_feedback?`<p class="lp-feedback">${escapeHtml(t.admin_feedback)}</p>`:"";
+  const revisionLink=t.admin_revision_file_name?`<a class="action-link" href="/api/lesson-plans/uploads/${t.upload_id}/revision-file" target="_blank" rel="noopener">Attached PDF from the administrator: ${escapeHtml(t.admin_revision_file_name)}</a>`:"";
+  const feedback=t.admin_feedback?`<p class="lp-feedback"><strong>Administrator's comment:</strong> ${escapeHtml(t.admin_feedback)}</p>`:"";
   const history=Number(t.revision_count)>0?`<details><summary>View previous revisions (${t.revision_count})</summary><div class="lp-history" data-history-task="${t.id}">Loading revision history…</div></details>`:"";
   const subInfo=submitted?`<p class="lp-meta">Passed ${formatDate(t.submitted_at)}${t.submitted_late?" · after the due date":""}${Number(t.revision_count)>0?` · ${t.revision_count} earlier revision(s)`:""}</p>`:"";
   const pdfLink=submitted?`<a class="action-link lp-pdf-link" href="/api/lesson-plans/uploads/${t.upload_id}/file" target="_blank" rel="noopener">Open PDF: ${escapeHtml(t.file_name)}</a>`:"";
@@ -509,7 +509,7 @@ function lpTaskControls(t, admin){
   if(admin){
     if(!submitted) return `${retained||`<p class="lp-note">${state==="overdue"?"This lesson plan is overdue. The teacher has not uploaded it yet.":"Waiting for the teacher to upload."}</p>`}`;
     const review=["submitted","late"].includes(state)
-      ? `<form class="lp-review-form" data-upload-id="${t.upload_id}"><label class="login-field">Decision<select name="status"><option>Approved</option><option>For Revision</option></select></label><label class="login-field lp-revision-file-field" hidden>Upload revision instructions (PDF only, max 8 MB)<input name="revisionFile" type="file" accept="application/pdf,.pdf"></label><button class="button button-primary" type="submit">Save review decision</button></form>`
+      ? `<form class="lp-review-form" data-upload-id="${t.upload_id}"><label class="login-field">Decision<select name="status"><option>Approved</option><option>For Revision</option></select></label><label class="login-field">Comments for the teacher<textarea name="feedback" rows="3" maxlength="2000" placeholder="Required for a revision. Optional when approving."></textarea></label><label class="login-field">Attach a PDF (optional, max 8 MB)<input name="revisionFile" type="file" accept="application/pdf,.pdf"></label><button class="button button-primary" type="submit">Save review decision</button></form>`
       : `<p class="lp-note">${state==="approved"?"Approved — waiting for the teacher to confirm.":state==="completed"?"Completed and confirmed by the teacher.":state==="for revision"?"Revision requested — waiting for the teacher's new upload.":"This submission is not awaiting review."}</p>`;
     const del=`<button type="button" class="button button-danger-outline lp-delete-upload" data-upload-id="${t.upload_id}" data-task-label="${escapeHtml(`${t.teacher_name} · ${t.subject_name} · ${lpDateLabel(lpDay(t),{month:"short",day:"numeric",year:"numeric"})}`)}">Delete this lesson plan…</button>`;
     return `${flagBanner}${pdfLink}${revisionLink?`<p>${revisionLink}</p>`:""}${feedback}${subInfo}${review}${history}${del}`;
@@ -520,9 +520,9 @@ function lpTaskControls(t, admin){
     const action=state==="approved"?`<p class="lp-note">The administrator approved this lesson plan. Confirm to mark it completed.</p><button class="button button-primary lp-confirm-approval" data-upload-id="${t.upload_id}" type="button">Confirm approval and complete</button>`
       :state==="completed"?`<p class="lp-note">Completed. Your approval has been confirmed.</p>`
       :`<p class="lp-note">Under review. Passed the wrong file? You can resubmit — the passing date becomes the day you resubmit.</p><details class="lp-resubmit"><summary class="button button-secondary">Resubmit lesson plan</summary>${uploadForm("Choose the replacement lesson plan","Resubmit lesson plan",true)}</details>`;
-    return `${flagBanner}${pdfLink}${feedback}${subInfo}${action}${history}`;
+    return `${flagBanner}${pdfLink}${feedback}${revisionLink?`<p>${revisionLink}</p>`:""}${subInfo}${action}${history}`;
   }
-  const rev=state==="for revision"?(revisionLink?`<p>Download ${revisionLink}</p>`:`<p class="lp-note">Check with the administrator for revision instructions.</p>`):"";
+  const rev=state==="for revision"?(revisionLink?`<p>${revisionLink}</p>`:(t.admin_feedback?"":`<p class="lp-note">Check with the administrator for revision instructions.</p>`)):"";
   return `${retained}${submitted?`${flagBanner}${pdfLink}`:""}${feedback}${rev}${uploadForm(submitted?"Upload revised lesson plan":"Upload lesson plan",submitted?"Upload revised lesson plan":"Submit daily lesson plan",false)}${history}`;
 }
 function renderLpDialog(){
@@ -1065,7 +1065,6 @@ document.querySelector("#lp-assignment-list").addEventListener("submit",async(ev
 });
 document.querySelector("#view-lesson-plans").addEventListener("click",async(event)=>{const button=event.target.closest(".lp-confirm-approval");if(!button)return;if(!confirm("Confirm that you have received the administrator's approval? This will mark the lesson plan as completed."))return;try{await api(`/api/lesson-plans/uploads/${button.dataset.uploadId}/confirm`,{method:"POST",body:{}});await refreshLessonPlans();await refreshLpNotifications();showToast("Approval confirmed. Lesson plan completed.");}catch(e){setGlobalError(e.message);}});
 
-document.querySelector("#view-lesson-plans").addEventListener("change",(event)=>{const select=event.target.closest('.lp-review-form select[name="status"]');if(!select)return;const field=select.closest(".lp-review-form").querySelector(".lp-revision-file-field");if(field){field.hidden=select.value!=="For Revision";const input=field.querySelector("input");if(input)input.required=select.value==="For Revision";}});
 /* Upload flow: the server checks the file. If it looks blank, is not a lesson plan, or was already submitted,
    it sends back warnings and saves nothing until the teacher appeals ("yes, this is my lesson plan"). */
 let lpPendingUpload=null;
@@ -1127,13 +1126,14 @@ document.querySelector("#view-lesson-plans").addEventListener("submit",async(eve
     event.preventDefault();
     const data=new FormData(reviewForm);
     const status=data.get("status");
+    const feedback=String(data.get("feedback")||"").trim();
     const revisionFile=reviewForm.querySelector('input[name="revisionFile"]')?.files?.[0];
-    if(status==="For Revision"){
-      if(!revisionFile){setGlobalError("Upload a PDF document containing the required revisions.");return;}
-      if(!revisionFile.name.toLowerCase().endsWith(".pdf") || (revisionFile.type && revisionFile.type!=="application/pdf")){setGlobalError("Revision instructions must be a PDF file.");return;}
-      if(revisionFile.size>8*1024*1024){setGlobalError("Revision PDF must be 8 MB or smaller.");return;}
+    if(revisionFile){
+      if(!revisionFile.name.toLowerCase().endsWith(".pdf") || (revisionFile.type && revisionFile.type!=="application/pdf")){setGlobalError("The attached document must be a PDF file.");return;}
+      if(revisionFile.size>8*1024*1024){setGlobalError("The attached PDF must be 8 MB or smaller.");return;}
     }
-    try { await api(`/api/lesson-plans/uploads/${reviewForm.dataset.uploadId}/review`,{method:"POST",body:{status,revisionFile:status==="For Revision"?await fileToPayload(revisionFile):null}}); await refreshLessonPlans(); await refreshLpNotifications(); showToast(status==="For Revision" ? "Revision PDF sent to the teacher." : "Lesson plan approved."); }
+    if(status==="For Revision" && !feedback && !revisionFile){setGlobalError("Write a comment (or attach a PDF) telling the teacher what to revise.");return;}
+    try { await api(`/api/lesson-plans/uploads/${reviewForm.dataset.uploadId}/review`,{method:"POST",body:{status,feedback,revisionFile:revisionFile?await fileToPayload(revisionFile):null}}); await refreshLessonPlans(); await refreshLpNotifications(); showToast(status==="For Revision" ? "Revision request sent to the teacher." : "Lesson plan approved."); }
     catch(e){setGlobalError(e.message);}
   }
 });

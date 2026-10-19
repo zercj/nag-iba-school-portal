@@ -1156,15 +1156,17 @@ async function handleLessonPlanRoutes(request, response, url, actor) {
     if (!["Approved","For Revision"].includes(status)) throw new HttpError(400,"Choose Approved or For Revision.");
     const feedback=String(body.feedback||"").trim().slice(0,2000);
     let revisionFileName="", revisionFileData=null;
-    if (status === "For Revision") {
-      if (!body.revisionFile || typeof body.revisionFile.name !== "string" || typeof body.revisionFile.data !== "string") throw new HttpError(400,"Upload a PDF document containing the required revisions.");
+    // A written comment is enough. An attached PDF is optional for both Approved and For Revision.
+    if (body.revisionFile) {
+      if (typeof body.revisionFile.name !== "string" || typeof body.revisionFile.data !== "string") throw new HttpError(400,"The attached document is invalid.");
       revisionFileName=path.basename(body.revisionFile.name).slice(0,255);
       const type=String(body.revisionFile.type||"").toLowerCase();
-      if (!revisionFileName.toLowerCase().endsWith(".pdf") || (type && type!=="application/pdf")) throw new HttpError(400,"Revision instructions must be a PDF file.");
+      if (!revisionFileName.toLowerCase().endsWith(".pdf") || (type && type!=="application/pdf")) throw new HttpError(400,"The attached document must be a PDF file.");
       revisionFileData=Buffer.from(body.revisionFile.data,"base64");
-      if (!revisionFileData.length || revisionFileData.length>8*1024*1024) throw new HttpError(413,"Revision PDF must be no larger than 8 MB.");
-      if (revisionFileData.subarray(0,5).toString("ascii")!=="%PDF-") throw new HttpError(400,"The revision document does not appear to be a valid PDF.");
+      if (!revisionFileData.length || revisionFileData.length>8*1024*1024) throw new HttpError(413,"The attached PDF must be no larger than 8 MB.");
+      if (revisionFileData.subarray(0,5).toString("ascii")!=="%PDF-") throw new HttpError(400,"The attached document does not appear to be a valid PDF.");
     }
+    if (status === "For Revision" && !feedback && !revisionFileData) throw new HttpError(400,"Write a comment (or attach a PDF) telling the teacher what to revise.");
     const current=await pool.query("SELECT status FROM lesson_plan_uploads WHERE id=$1",[reviewMatch[1]]);
     if (!current.rowCount) throw new HttpError(404,"Lesson-plan submission not found.");
     if (!["Submitted","Late"].includes(current.rows[0].status)) throw new HttpError(409,"Only submissions awaiting review can be reviewed. A revised submission must be uploaded before it can be approved.");
@@ -1425,16 +1427,17 @@ async function handleScheduleRoutes(request, response, url, actor) {
   if (url.pathname === "/api/schedule/options" && request.method === "GET") {
     const teacher = await resolveTeacher(url.searchParams.get("teacherId"));
     const [subjects, sections] = await Promise.all([
-      pool.query("SELECT DISTINCT name FROM subjects WHERE teacher_id = $1 ORDER BY name", [teacher.id]),
+      pool.query(`SELECT s.id, s.name, EXISTS (SELECT 1 FROM lesson_plan_subject_assignments a WHERE a.subject_id = s.id) AS assigned
+                  FROM subjects s WHERE s.teacher_id = $1 ORDER BY s.name`, [teacher.id]),
       pool.query("SELECT id, name FROM school_sections ORDER BY LOWER(name)"),
     ]);
-    sendJson(response, 200, { subjects: subjects.rows.map((r) => r.name), sections: sections.rows, leaveTypes: LEAVE_TYPES });
+    sendJson(response, 200, { subjects: subjects.rows.map((r) => r.name), mySubjects: subjects.rows, sections: sections.rows, leaveTypes: LEAVE_TYPES });
     return true;
   }
 
-  const readEntry = async (body, ignoreId = null) => {
+  const readEntry = async (body, ignoreId = null, dayOverride = null) => {
     const teacher = await resolveTeacher(body.teacherId);
-    const weekday = Number(body.weekday);
+    const weekday = Number(dayOverride ?? body.weekday);
     if (!Number.isInteger(weekday) || weekday < 1 || weekday > 5) throw new HttpError(400, "Choose a day from Monday to Friday.");
     const timeIn = String(body.timeIn || ""), timeOut = String(body.timeOut || "");
     if (!TIME_PATTERN.test(timeIn) || !TIME_PATTERN.test(timeOut)) throw new HttpError(400, "Choose both a time in and a time out.");
@@ -1455,16 +1458,51 @@ async function handleScheduleRoutes(request, response, url, actor) {
   if (url.pathname === "/api/schedule" && request.method === "POST") {
     ensureSameOrigin(request);
     const body = await parseJson(request);
-    const entry = await readEntry(body);
-    const id = await inTransaction(async (connection) => {
-      const created = await connection.query(
-        `INSERT INTO teacher_schedule (teacher_id, weekday, time_in, time_out, subject, section) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-        [entry.teacher.id, entry.weekday, entry.timeIn, entry.timeOut, entry.subject, entry.section]);
-      await connection.query("INSERT INTO school_sections (name) VALUES ($1) ON CONFLICT DO NOTHING", [entry.section]);
-      await audit(connection, actor.id, "schedule.created", "teacher_schedule", created.rows[0].id);
-      return created.rows[0].id;
+    // The same subject and time can be saved on several days in one go (e.g. Mon, Wed, Fri).
+    const days = [...new Set((Array.isArray(body.weekdays) ? body.weekdays : [body.weekday]).map(Number))];
+    if (!days.length || days.length > 5) throw new HttpError(400, "Choose at least one day from Monday to Friday.");
+    const entries = [];
+    for (const day of days) entries.push(await readEntry(body, null, day));
+    const ids = await inTransaction(async (connection) => {
+      const created = [];
+      for (const entry of entries) {
+        const row = await connection.query(
+          `INSERT INTO teacher_schedule (teacher_id, weekday, time_in, time_out, subject, section) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+          [entry.teacher.id, entry.weekday, entry.timeIn, entry.timeOut, entry.subject, entry.section]);
+        created.push(row.rows[0].id);
+        await audit(connection, actor.id, "schedule.created", "teacher_schedule", row.rows[0].id);
+      }
+      await connection.query("INSERT INTO school_sections (name) VALUES ($1) ON CONFLICT DO NOTHING", [entries[0].section]);
+      return created;
     });
-    sendJson(response, 201, { ok: true, id });
+    sendJson(response, 201, { ok: true, ids });
+    return true;
+  }
+
+  // Teachers can keep their own list of subjects (several at once, comma separated).
+  if (url.pathname === "/api/schedule/subjects" && request.method === "POST") {
+    ensureSameOrigin(request);
+    const body = await parseJson(request);
+    const teacher = await resolveTeacher(body.teacherId);
+    const names = [...new Map((Array.isArray(body.names) ? body.names : []).map((n) => String(n || "").trim()).filter(Boolean).map((n) => [n.toLowerCase(), n])).values()];
+    if (!names.length || names.length > 20 || names.some((n) => n.length > 160)) throw new HttpError(400, "Enter 1–20 subject names (up to 160 characters each).");
+    await inTransaction(async (connection) => {
+      for (const name of names) await connection.query("INSERT INTO subjects (name, teacher_id) VALUES ($1, $2) ON CONFLICT (teacher_id, name) DO NOTHING", [name, teacher.id]);
+      await audit(connection, actor.id, "subjects.added", "user", teacher.id);
+    });
+    sendJson(response, 201, { ok: true });
+    return true;
+  }
+  const subjectMatch = url.pathname.match(/^\/api\/schedule\/subjects\/(\d+)$/);
+  if (subjectMatch && request.method === "DELETE") {
+    ensureSameOrigin(request);
+    const found = await pool.query("SELECT id, teacher_id FROM subjects WHERE id = $1", [subjectMatch[1]]);
+    if (!found.rowCount) throw new HttpError(404, "Subject not found.");
+    if (!isAdmin && String(found.rows[0].teacher_id) !== String(actor.id)) throw new HttpError(403, "You can only remove your own subjects.");
+    const assigned = await pool.query("SELECT 1 FROM lesson_plan_subject_assignments WHERE subject_id = $1", [subjectMatch[1]]);
+    if (assigned.rowCount) throw new HttpError(409, "This subject has lesson-plan schedules, so it cannot be removed here.");
+    await pool.query("DELETE FROM subjects WHERE id = $1", [subjectMatch[1]]);
+    sendJson(response, 200, { ok: true });
     return true;
   }
 

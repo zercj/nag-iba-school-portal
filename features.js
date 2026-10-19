@@ -74,16 +74,18 @@ $("#profile-form").addEventListener("submit", async (event) => {
 
 /* ====================== Class schedule: editor (Settings + admin) and weekly grid ====================== */
 function createScheduleEditor({ formHost, listHost, getTeacherId, onChange }) {
-  let options = { subjects: [], sections: [], leaveTypes: [] };
+  let options = { subjects: [], mySubjects: [], sections: [], leaveTypes: [] };
   let entries = [];
   let editingId = null;
 
   const formMarkup = (entry = {}) => {
     const subjectKnown = !entry.subject || options.subjects.includes(entry.subject);
     const sectionKnown = !entry.section || options.sections.some((s) => s.name === entry.section);
-    return `<form class="portal-form schedule-form" novalidate>
+    const subjectsBlock = `<div class="my-subjects"><strong>My subjects</strong><div class="subject-chips">${options.mySubjects.length ? options.mySubjects.map((s) => `<span class="subject-chip">${escapeHtml(s.name)}${s.assigned ? "" : `<button type="button" data-remove-subject="${s.id}" aria-label="Remove ${escapeHtml(s.name)}">&times;</button>`}</span>`).join("") : '<small class="form-hint">No subjects yet.</small>'}</div>
+      <form class="subject-add-form" novalidate><input name="names" maxlength="600" placeholder="Add subjects, separated by commas (e.g. Math 7, Science 8)" aria-label="Add subjects" /><button class="button button-secondary" type="submit">Add subjects</button></form></div>`;
+    return `${subjectsBlock}<form class="portal-form schedule-form" novalidate>
+      <fieldset class="day-picker schedule-days"><legend>${editingId ? "Day" : "Days (pick one or more)"}</legend>${[1, 2, 3, 4, 5].map((d) => `<label class="day-chip"><input type="checkbox" name="weekday" value="${d}"${Number(entry.weekday) === d ? " checked" : ""} /><span>${WEEKDAY_SHORT[d]}</span></label>`).join("")}</fieldset>
       <div class="schedule-fields">
-        <label class="login-field">Day<select name="weekday" required><option value="">Day</option>${[1, 2, 3, 4, 5].map((d) => `<option value="${d}"${Number(entry.weekday) === d ? " selected" : ""}>${WEEKDAY_NAMES[d]}</option>`).join("")}</select></label>
         <label class="login-field">Time in<select name="timeIn" required>${timeOptions(entry.timeIn, "Time in")}</select></label>
         <label class="login-field">Time out<select name="timeOut" required>${timeOptions(entry.timeOut, "Time out")}</select></label>
         <label class="login-field">Subject<select name="subjectChoice" required><option value="">Subject</option>${options.subjects.map((n) => `<option${n === entry.subject ? " selected" : ""}>${escapeHtml(n)}</option>`).join("")}<option value="__other"${subjectKnown ? "" : " selected"}>Other (type it)…</option></select></label>
@@ -94,7 +96,7 @@ function createScheduleEditor({ formHost, listHost, getTeacherId, onChange }) {
         <label class="login-field" data-section-new${sectionKnown ? " hidden" : ""}>New section name<input name="sectionNew" maxlength="80" placeholder="e.g. Grade 7 – Sampaguita" value="${sectionKnown ? "" : escapeHtml(entry.section)}" /></label>
       </div>
       <p class="form-error schedule-error" role="alert" hidden></p>
-      <div class="form-actions"><span class="form-hint">${options.subjects.length ? "Subjects come from the lesson-plan subjects assigned to you." : "No assigned subjects yet — choose “Other” to type one."}</span><span class="row-actions">${editingId ? '<button class="button button-secondary" type="button" data-cancel-edit>Cancel edit</button>' : ""}<button class="button button-primary" type="submit">${editingId ? "Save changes" : "Save class"}</button></span></div>
+      <div class="form-actions"><span class="form-hint">Tick every day this class meets. Subjects come from “My subjects” above; choose “Other” to type a one-off.</span><span class="row-actions">${editingId ? '<button class="button button-secondary" type="button" data-cancel-edit>Cancel edit</button>' : ""}<button class="button button-primary" type="submit">${editingId ? "Save changes" : "Save class"}</button></span></div>
     </form>`;
   };
 
@@ -113,7 +115,7 @@ function createScheduleEditor({ formHost, listHost, getTeacherId, onChange }) {
     const teacherId = getTeacherId();
     if (!teacherId) { formHost.innerHTML = ""; listHost.innerHTML = emptyFeed("Choose a teacher."); return; }
     const [opt, list] = await Promise.all([api(`/api/schedule/options?teacherId=${encodeURIComponent(teacherId)}`), api(`/api/schedule?teacherId=${encodeURIComponent(teacherId)}`)]);
-    options = opt; entries = list.entries; editingId = null;
+    options = { mySubjects: [], subjects: [], sections: [], ...opt }; entries = list.entries; editingId = null;
     renderForm(); renderList();
   }
 
@@ -125,23 +127,38 @@ function createScheduleEditor({ formHost, listHost, getTeacherId, onChange }) {
       if (event.target.value && !out.value) { const end = minutesOf(event.target.value) + 50; out.value = `${String(Math.floor(end / 60)).padStart(2, "0")}:${String(end % 60).padStart(2, "0")}`; }
     }
   });
-  formHost.addEventListener("click", (event) => { if (event.target.closest("[data-cancel-edit]")) { editingId = null; renderForm(); } });
+  formHost.addEventListener("click", async (event) => {
+    if (event.target.closest("[data-cancel-edit]")) { editingId = null; renderForm(); return; }
+    const remove = event.target.closest("[data-remove-subject]");
+    if (!remove) return;
+    try { await api(`/api/schedule/subjects/${remove.dataset.removeSubject}`, { method: "DELETE" }); await load(); } catch (e) { setGlobalError(e.message); }
+  });
   formHost.addEventListener("submit", async (event) => {
     event.preventDefault();
+    if (event.target.classList.contains("subject-add-form")) {
+      const names = String(new FormData(event.target).get("names")).split(/[,;\n]/).map((n) => n.trim()).filter(Boolean);
+      if (!names.length) return;
+      try { await api("/api/schedule/subjects", { method: "POST", body: { teacherId: Number(getTeacherId()), names } }); showToast("Subjects added."); await load(); } catch (e) { setGlobalError(e.message); }
+      return;
+    }
     const form = event.target, data = new FormData(form), error = $(".schedule-error", form);
     error.hidden = true;
     const subject = data.get("subjectChoice") === "__other" ? String(data.get("subjectOther")).trim() : data.get("subjectChoice");
     const section = data.get("sectionChoice") === "__new" ? String(data.get("sectionNew")).trim() : data.get("sectionChoice");
     const fail = (m) => { error.textContent = m; error.hidden = false; };
-    if (!data.get("weekday") || !data.get("timeIn") || !data.get("timeOut")) return fail("Choose the day, time in and time out.");
+    const days = data.getAll("weekday").map(Number);
+    if (!days.length || !data.get("timeIn") || !data.get("timeOut")) return fail("Choose at least one day, the time in and the time out.");
     if (!subject) return fail("Choose or type the subject.");
     if (!section) return fail("Choose or type the section.");
-    const body = { teacherId: Number(getTeacherId()), weekday: Number(data.get("weekday")), timeIn: data.get("timeIn"), timeOut: data.get("timeOut"), subject, section };
+    const body = { teacherId: Number(getTeacherId()), weekday: days[0], timeIn: data.get("timeIn"), timeOut: data.get("timeOut"), subject, section };
     const button = $('button[type="submit"]', form); button.disabled = true;
     try {
-      if (editingId) await api(`/api/schedule/${editingId}`, { method: "PUT", body });
-      else await api("/api/schedule", { method: "POST", body });
-      showToast(editingId ? "Class updated." : "Class saved.");
+      if (editingId) {
+        await api(`/api/schedule/${editingId}`, { method: "PUT", body });
+        // Extra ticked days become additional classes with the same subject and time.
+        if (days.length > 1) await api("/api/schedule", { method: "POST", body: { ...body, weekdays: days.slice(1) } });
+      } else await api("/api/schedule", { method: "POST", body: { ...body, weekdays: days } });
+      showToast(editingId ? "Class updated." : days.length > 1 ? `Class saved on ${days.length} days.` : "Class saved.");
       await load(); onChange?.();
     } catch (e) { fail(e.message); button.disabled = false; }
   });
