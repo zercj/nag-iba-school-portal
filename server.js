@@ -1786,7 +1786,18 @@ async function start() {
     console.warn("Supabase Storage is not configured: uploads stay in the database (development only).");
   }
   const schema = await readFile(path.join(root, "schema.sql"), "utf8");
-  await pool.query(schema);
+  // Only one instance may apply the schema at a time; overlapping deploys otherwise deadlock on the ALTER TABLE locks.
+  const migrator = await pool.connect();
+  try {
+    await migrator.query("SELECT pg_advisory_lock(727001)");
+    await migrator.query(schema);
+  } finally {
+    try {
+      await migrator.query("SELECT pg_advisory_unlock(727001)");
+    } finally {
+      migrator.release();
+    }
+  }
   await bootstrapDevelopers();
   const developerCount = await pool.query(
     "SELECT COUNT(*)::int AS count FROM users WHERE role = 'developer' AND active = TRUE",
