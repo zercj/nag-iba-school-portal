@@ -8,11 +8,9 @@ const roleLabels = {
 const viewTitles = {
   overview: ["Overview", "Welcome to the Nag-iba National High School portal."],
   users: ["Accounts", "Manage school portal accounts permitted for your role."],
-  messages: ["Messages", "Send and receive private messages with school accounts."],
   announcements: ["Announcements", "School and classroom updates."],
   "lesson-plans": ["Lesson Plans", "Schedule, submit and review daily lesson plans."],
   ancillary: ["Ancillary Tasks", "Manually assigned tasks and document submissions."],
-  summary: ["Summary", "Teachers, their subjects and lesson-plan submissions at a glance."],
   settings: ["Settings", "Your profile, sign-in details and class schedule."],
 };
 
@@ -110,7 +108,6 @@ function updateNavigation() {
   document.querySelectorAll("[data-roles]").forEach((el) => { el.hidden = !el.dataset.roles.split(",").includes(currentUser.role); });
   document.querySelector("#lesson-plans-nav").hidden = !["admin","developer","teacher"].includes(currentUser.role);
   const lpAdminRole = ["admin","developer"].includes(currentUser.role);
-  document.querySelector("#summary-nav").hidden = !lpAdminRole;
   document.querySelector("#ancillary-nav").hidden = currentUser.role === "student";
   document.querySelector("#anc-compose-panel").hidden = !lpAdminRole;
   document.querySelector("#anc-subtitle").textContent = lpAdminRole ? "Create manual tasks (like MPS), assign them to all or selected teachers, and review the documents they upload." : "Tasks assigned to you by the administrator. Upload any document to submit.";
@@ -136,13 +133,18 @@ function updateNavigation() {
       : "Manage administrator, teacher, and student portal accounts.";
 }
 
+let previousView = null;
 function goToView(view) {
+  // Retired tabs now live elsewhere: keep any old link working.
+  if (view === "messages") { openMessagesPanel(); return; }
+  if (view === "create-announcement") { if (typeof openAnnouncementDialog === "function") openAnnouncementDialog(); return; }
+  if (view === "summary") { if (!isLpAdmin()) return; goToView("lesson-plans"); setLpTab("summary"); return; }
   if (!viewTitles[view]) return;
   if (view === "users" && !userCanManageAccounts()) return;
-  if (view === "summary" && !isLpAdmin()) return;
   if (view === "ancillary" && currentUser.role === "student") return;
   if (view === "lesson-plans" && currentUser.role === "student") return;
   if (viewRegistry[view]?.allowed && !viewRegistry[view].allowed()) return;
+  previousView = currentView;
   currentView = view;
   for (const section of document.querySelectorAll(".portal-view")) {
     section.hidden = section.id !== `view-${view}`;
@@ -161,12 +163,11 @@ function goToView(view) {
   try { sessionStorage.setItem("portalView", view); } catch (_) {}
   document.querySelector("#main-content").scrollTo?.(0, 0); window.scrollTo(0, 0);
   if (view === "users") refreshUsers();
-  if (view === "messages") refreshMessages();
   if (view === "announcements") refreshAnnouncements();
-  if (view === "summary") refreshSummary();
   if (view === "ancillary") refreshAncillary();
   if (view === "lesson-plans") refreshLessonPlans();
   if (view !== "lesson-plans") closeLpDrawer();
+  if (view === "announcements" || view === "memos") setAnnounceOpen(true);
   viewRegistry[view]?.onEnter?.();
 }
 
@@ -330,6 +331,9 @@ function setLpTab(tab){
   view.dataset.lpTab=tab;
   view.querySelectorAll("[data-lp-pane]").forEach(el=>el.classList.toggle("lp-pane-off",el.dataset.lpPane!==tab));
   view.querySelectorAll(".lp-tab").forEach(b=>{const on=b.dataset.lpTab===tab;b.classList.toggle("is-active",on);b.setAttribute("aria-selected",on);});
+  // The Summary tab has its own term filter, so hide the shared term picker there.
+  document.querySelector("#lp-term-panel")?.classList.toggle("lp-pane-off",tab==="summary");
+  if(tab==="summary") refreshSummary();
 }
 
 
@@ -788,7 +792,7 @@ function openEditUser(user) {
 async function refreshAfterMutation(message) {
   await refreshOverview();
   if (currentView === "users") renderUsers();
-  if (currentView === "messages") renderMessages();
+  renderMessages();
   if (currentView === "announcements") renderAnnouncements();
   showToast(message);
 }
@@ -1216,7 +1220,7 @@ function renderSummary() {
     return accItem("summary", teacher.id, head, `<ul class="summary-subjects">${items}</ul>`, "panel summary-card");
   });
 }
-document.querySelector("#view-summary").addEventListener("click", (event) => {
+document.querySelector("#lp-summary-pane").addEventListener("click", (event) => {
   const b = event.target.closest("[data-summary-term]");
   if (b) { summaryTerm = b.dataset.summaryTerm; renderSummary(); }
 });
@@ -1326,6 +1330,40 @@ document.querySelector("#view-ancillary").addEventListener("submit", async (even
   } catch (e) { setGlobalError(e.message); window.scrollTo({ top: 0, behavior: "smooth" }); }
 });
 
+/* ---------- Sidebar: Announcements expands to show Memos (linktree style) ---------- */
+function setAnnounceOpen(open) {
+  const sub = document.querySelector("#announce-sub"), toggle = document.querySelector("#announce-toggle");
+  if (!sub || !toggle) return;
+  sub.hidden = !open;
+  toggle.setAttribute("aria-expanded", String(open));
+  toggle.closest(".nav-group").classList.toggle("is-open", open);
+}
+document.querySelector("#announce-toggle").addEventListener("click", () => {
+  // The generic data-view handler has already navigated; collapse only when the tab was already open.
+  if (previousView === "announcements") setAnnounceOpen(document.querySelector("#announce-sub").hidden);
+});
+
+/* ---------- Floating messages: pop-up opened from the bottom-right icon ---------- */
+function openMessagesPanel() {
+  const panel = document.querySelector("#msg-panel");
+  panel.hidden = false;
+  document.querySelector("#msg-fab").setAttribute("aria-expanded", "true");
+  refreshMessages();
+  document.querySelector("#message-body")?.focus({ preventScroll: true });
+}
+function closeMessagesPanel() {
+  document.querySelector("#msg-panel").hidden = true;
+  document.querySelector("#msg-fab").setAttribute("aria-expanded", "false");
+}
+document.querySelector("#msg-fab").addEventListener("click", () => {
+  if (document.querySelector("#msg-panel").hidden) openMessagesPanel(); else closeMessagesPanel();
+});
+document.querySelector("#msg-close").addEventListener("click", closeMessagesPanel);
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !document.querySelector("#msg-panel").hidden && !document.querySelector("dialog[open]")) closeMessagesPanel();
+});
+portalHooks.onLogout.push(closeMessagesPanel);
+
 /* ---------- Ergonomics: mobile menu, remembered view, keyboard ---------- */
 function closeSidebar() {
   document.querySelector("#sidebar")?.classList.remove("is-open");
@@ -1379,6 +1417,6 @@ document.addEventListener("click", (event) => {
   event.preventDefault();
   openPdfViewer(trigger.dataset.viewFile, trigger.dataset.viewTitle);
 });
-document.querySelector("#pdf-viewer-close").addEventListener("click", () => document.querySelector("#pdf-viewer-dialog").close());
-document.querySelector("#pdf-viewer-dialog").addEventListener("close", () => { document.querySelector("#pdf-viewer-frame").src = "about:blank"; });
+document.querySelector("#pdf-viewer-close")?.addEventListener("click", () => document.querySelector("#pdf-viewer-dialog")?.close());
+document.querySelector("#pdf-viewer-dialog")?.addEventListener("close", () => { document.querySelector("#pdf-viewer-frame").src = "about:blank"; });
 document.querySelector("#photo-dialog").addEventListener("click", (event) => { if (event.target === event.currentTarget) event.currentTarget.close(); });

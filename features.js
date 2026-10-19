@@ -234,7 +234,7 @@ registerView("settings", viewTitles.settings, {
   },
 });
 
-/* ====================== Announcements: separate "New announcement" tab ====================== */
+/* ====================== Announcements: "New announcement" pop-up ====================== */
 let announcementPhotos = [];
 const loadImage = (url) => new Promise((resolve, reject) => { const img = new Image(); img.onload = () => resolve(img); img.onerror = () => reject(new Error("That image could not be read.")); img.src = url; });
 const readAsDataUrl = (file) => new Promise((resolve, reject) => { const r = new FileReader(); r.onload = () => resolve(String(r.result)); r.onerror = () => reject(new Error(`Could not read ${file.name}.`)); r.readAsDataURL(file); });
@@ -301,11 +301,19 @@ $("#announcement-form").addEventListener("submit", async (event) => {
     await api("/api/announcements", { method: "POST", body: { title: data.get("title"), body: data.get("body"), expiresAt: end.toISOString(), images: announcementPhotos.map((p) => ({ name: p.name, type: "image/jpeg", data: p.url.split(",")[1] })) } });
     form.reset(); announcementPhotos = []; renderPhotoPreview(); updateExpiryHint();
     showToast("Announcement published.");
+    $("#announcement-dialog").close();
     goToView("announcements");
   } catch (e) { error.textContent = e.message; error.hidden = false; } finally { button.disabled = false; }
 });
-registerView("create-announcement", ["New Announcement", "Publish an announcement with photos and a display period."], { allowed: () => currentUser.role !== "student", onEnter: updateExpiryHint });
-$("#go-new-announcement").addEventListener("click", () => goToView("create-announcement"));
+// "New announcement" is a pop-up on the Announcements page, not a separate tab.
+function openAnnouncementDialog() {
+  if (currentUser.role === "student") return;
+  $("#announcement-form-error").hidden = true;
+  updateExpiryHint();
+  $("#announcement-dialog").showModal();
+}
+$("#go-new-announcement").addEventListener("click", openAnnouncementDialog);
+$("#announcement-dialog-close").addEventListener("click", () => $("#announcement-dialog").close());
 
 /* ====================== Memos ====================== */
 let memos = [];

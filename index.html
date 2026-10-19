@@ -54,14 +54,14 @@
         <div class="nav-label">SCHOOL PORTAL</div>
         <nav class="main-nav">
           <button class="nav-link active" type="button" data-view="overview" aria-current="page"><span class="nav-icon" aria-hidden="true">◫</span>Overview</button>
-          <button class="nav-link" type="button" data-view="users" id="users-nav"><span class="nav-icon" aria-hidden="true">♙</span><span id="users-nav-label">Accounts</span></button>
-          <button class="nav-link" type="button" data-view="messages"><span class="nav-icon" aria-hidden="true">✉</span>Messages<span class="nav-count" id="unread-count" hidden></span></button>
-          <button class="nav-link" type="button" data-view="announcements"><span class="nav-icon" aria-hidden="true">◷</span>Announcements</button>
-          <button class="nav-link" type="button" data-view="create-announcement" data-roles="developer,admin,teacher" hidden><span class="nav-icon" aria-hidden="true">✎</span>New Announcement</button>
+          <div class="nav-group" id="announce-group">
+            <button class="nav-link" type="button" id="announce-toggle" data-view="announcements" aria-expanded="false" aria-controls="announce-sub"><span class="nav-icon" aria-hidden="true">◷</span>Announcements<span class="nav-chevron" aria-hidden="true">▾</span></button>
+            <div class="nav-sub" id="announce-sub" hidden>
+              <button class="nav-sublink" type="button" data-view="memos"><span class="nav-icon" aria-hidden="true">❐</span>Memos</button>
+            </div>
+          </div>
           <button class="nav-link" type="button" data-view="lesson-plans" id="lesson-plans-nav"><span class="nav-icon" aria-hidden="true">▤</span>Lesson Plans</button>
           <button class="nav-link" type="button" data-view="ancillary" id="ancillary-nav" hidden><span class="nav-icon" aria-hidden="true">✚</span>Ancillary Tasks</button>
-          <button class="nav-link" type="button" data-view="summary" id="summary-nav" hidden><span class="nav-icon" aria-hidden="true">≣</span>Summary</button>
-          <button class="nav-link" type="button" data-view="memos"><span class="nav-icon" aria-hidden="true">❐</span>Memos</button>
           <button class="nav-link" type="button" data-view="schedule" data-roles="developer,admin,teacher" hidden><span class="nav-icon" aria-hidden="true">▦</span>Schedule</button>
           <button class="nav-link" type="button" data-view="attendance" data-roles="developer,admin,teacher" hidden><span class="nav-icon" aria-hidden="true">✔</span>Attendance</button>
         </nav>
@@ -71,6 +71,7 @@
             <div class="profile-info"><strong id="profile-name">School User</strong><span id="profile-role">Account</span></div>
             <button class="profile-gear" id="profile-gear" type="button" aria-label="Account options" aria-haspopup="menu" aria-expanded="false">⚙</button>
             <div class="profile-menu-pop" id="profile-menu" role="menu" hidden>
+              <button type="button" role="menuitem" data-view="users" id="users-nav" hidden><span aria-hidden="true">♙</span> <span id="users-nav-label">Accounts</span></button>
               <button type="button" role="menuitem" data-view="settings" id="menu-settings"><span aria-hidden="true">⚙</span> Settings</button>
               <button type="button" role="menuitem" id="sign-out"><span aria-hidden="true">↩</span> Sign out</button>
             </div>
@@ -113,59 +114,21 @@
             </section>
           </section>
 
-          <section class="portal-view" id="view-messages" hidden>
-            <div class="section-heading"><div><h2>Messages</h2><p>Send a private message to an active school account.</p></div></div>
-            <div class="messages-layout">
-              <section class="panel">
-                <div class="panel-heading"><div><h2>Compose a message</h2><p>Messages are visible only to the sender and recipient.</p></div></div>
-                <form id="message-form" class="portal-form">
-                  <label class="login-field" for="message-recipient">Send to<select id="message-recipient" name="recipientId" required></select></label>
-                  <label class="login-field" for="message-body">Message<textarea id="message-body" name="body" rows="4" maxlength="4000" required></textarea></label>
-                  <div class="form-actions"><span class="form-hint">Up to 4,000 characters</span><button class="button button-primary" type="submit">Send message</button></div>
-                </form>
-              </section>
-              <section class="panel">
-                <div class="panel-heading"><div><h2>Inbox &amp; sent</h2><p>Your most recent conversations</p></div><button class="text-button" type="button" id="refresh-messages">Refresh</button></div>
-                <div id="message-list" class="feed-list"></div>
-              </section>
-            </div>
-          </section>
-
           <section class="portal-view" id="view-announcements" hidden>
             <div class="section-heading"><div><h2>Announcements</h2><p>Current school and classroom announcements. Each one disappears when its display period ends.</p></div><button class="button button-primary" type="button" id="go-new-announcement" data-roles="developer,admin,teacher" hidden>＋ New announcement</button></div>
             <div id="announcement-list" class="content-feed announcement-feed"></div>
             <dialog id="photo-dialog" class="lp-dialog photo-dialog" aria-label="Announcement photo"><div class="lp-dialog-head"><div><small id="photo-dialog-kicker">Announcement</small><h3 id="photo-dialog-title">Photo</h3></div><button type="button" class="lp-dialog-close" id="photo-dialog-close" aria-label="Close">&times;</button></div><div class="photo-dialog-body"><img id="photo-dialog-img" alt="" /></div></dialog>
           </section>
 
-          <section class="portal-view" id="view-create-announcement" hidden>
-            <div class="section-heading"><div><h2>New announcement</h2><p>Write it, add photos or a pubmat, and choose how long it stays up. It is deleted automatically afterwards.</p></div></div>
-            <section class="panel compose-panel">
-              <form id="announcement-form" class="portal-form">
-                <label class="login-field" for="announcement-title">Title<input id="announcement-title" name="title" maxlength="180" required /></label>
-                <label class="login-field" for="announcement-body">Announcement<textarea id="announcement-body" name="body" rows="5" maxlength="10000" required></textarea></label>
-                <div class="form-row">
-                  <label class="login-field" for="announcement-duration">Display for<select id="announcement-duration" name="duration">
-                    <option value="1d">1 day</option><option value="3d">3 days</option><option value="7d" selected>1 week</option><option value="14d">2 weeks</option><option value="30d">1 month</option><option value="custom">Until a date I choose…</option></select></label>
-                  <label class="login-field" for="announcement-until" id="announcement-until-wrap" hidden>Show until (end of day)<input id="announcement-until" type="date" /></label>
-                </div>
-                <div class="login-field"><span>Photos / pubmat (optional, up to 4)</span>
-                  <input id="announcement-photos" type="file" accept="image/jpeg,image/png,image/webp,image/gif" multiple />
-                  <small class="form-hint">Large pictures are shrunk automatically so they load quickly.</small>
-                  <div id="announcement-photo-preview" class="photo-preview"></div></div>
-                <p id="announcement-form-error" class="form-error" role="alert" hidden></p>
-                <div class="form-actions"><span class="form-hint" id="announcement-expiry-hint"></span><button class="button button-primary" type="submit">Publish announcement</button></div>
-              </form>
-            </section>
-          </section>
-
           <section class="portal-view" id="view-lesson-plans" hidden>
             <div class="section-heading"><div><h2>Lesson plans</h2><p id="lp-page-subtitle">Schedule instruction, assign subjects to teachers, and review submissions.</p></div></div>
-            <section class="panel term-filter-panel"><label class="login-field" for="lp-view-term">Selected term<select id="lp-view-term"><option value="">Choose a term to view lesson plans</option><option value="1">Term 1</option><option value="2">Term 2</option><option value="3">Term 3</option></select></label></section>
+            <section class="panel term-filter-panel" id="lp-term-panel"><label class="login-field" for="lp-view-term">Selected term<select id="lp-view-term"><option value="">Choose a term to view lesson plans</option><option value="1">Term 1</option><option value="2">Term 2</option><option value="3">Term 3</option></select></label></section>
 
             <nav class="lp-tabs" id="lp-tabs" role="tablist" aria-label="Lesson-plan sections" data-admin-only hidden>
               <button type="button" role="tab" class="lp-tab is-active" data-lp-tab="overview" aria-selected="true">Overview</button>
               <button type="button" role="tab" class="lp-tab" data-lp-tab="schedule" aria-selected="false">Schedule</button>
               <button type="button" role="tab" class="lp-tab" data-lp-tab="progress" aria-selected="false">Progress</button>
+              <button type="button" role="tab" class="lp-tab" data-lp-tab="summary" aria-selected="false">Summary</button>
             </nav>
 
             <!-- OVERVIEW: stats, teachers and subjects appear only once a term is chosen -->
@@ -203,6 +166,18 @@
                 <div class="form-actions"><span class="form-hint">Re-saving a schedule updates its dates. Days already submitted are never removed.</span><button class="button button-primary" type="submit">Save schedule</button></div>
               </form>
             </section>
+
+            <!-- SUMMARY: every teacher, their subjects and submission counts -->
+            <div id="lp-summary-pane" data-lp-pane="summary" data-admin-only hidden>
+              <section class="panel term-filter-panel"><label class="search-box summary-search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m16 16 4 4"/></svg><input id="summary-search" type="search" placeholder="Search teacher or subject" aria-label="Search teacher or subject" autocomplete="off" /></label><div class="summary-filter" role="group" aria-label="Term filter">
+                <button type="button" class="chip-button is-active" data-summary-term="all">All terms</button>
+                <button type="button" class="chip-button" data-summary-term="1">Term 1</button>
+                <button type="button" class="chip-button" data-summary-term="2">Term 2</button>
+                <button type="button" class="chip-button" data-summary-term="3">Term 3</button>
+              </div></section>
+              <div id="summary-totals" class="overview-stats"></div>
+              <div id="summary-list" class="summary-grid"></div>
+            </div>
 
             <!-- PROGRESS -->
             <section class="panel" data-lp-pane="progress" id="lp-progress-panel" hidden>
@@ -285,18 +260,6 @@
             </section>
           </section>
 
-          <section class="portal-view" id="view-summary" hidden>
-            <div class="section-heading"><div><h2>Lesson-plan summary</h2><p>Every teacher, their subjects, and how many lesson plans each subject has submitted.</p></div></div>
-            <section class="panel term-filter-panel"><label class="search-box summary-search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m16 16 4 4"/></svg><input id="summary-search" type="search" placeholder="Search teacher or subject" aria-label="Search teacher or subject" autocomplete="off" /></label><div class="summary-filter" role="group" aria-label="Term filter">
-              <button type="button" class="chip-button is-active" data-summary-term="all">All terms</button>
-              <button type="button" class="chip-button" data-summary-term="1">Term 1</button>
-              <button type="button" class="chip-button" data-summary-term="2">Term 2</button>
-              <button type="button" class="chip-button" data-summary-term="3">Term 3</button>
-            </div></section>
-            <div id="summary-totals" class="overview-stats"></div>
-            <div id="summary-list" class="summary-grid"></div>
-          </section>
-
           <section class="portal-view" id="view-memos" hidden>
             <div class="section-heading"><div><h2>Memos</h2><p id="memo-subtitle">Official memos from the school administration (PDF).</p></div></div>
             <section class="panel compose-panel" id="memo-compose-panel" hidden>
@@ -373,6 +336,25 @@
         </div>
       </main>
 
+
+    <!-- Floating messages: icon at the bottom right opens a small chat-style pop-up -->
+    <button type="button" class="msg-fab" id="msg-fab" aria-label="Messages" aria-haspopup="dialog" aria-expanded="false" aria-controls="msg-panel">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H9l-4.5 3.5V17H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z"/></svg>
+      <span class="msg-fab-badge" id="unread-count" hidden></span>
+    </button>
+    <section class="msg-panel" id="msg-panel" role="dialog" aria-label="Messages" hidden>
+      <header class="msg-panel-head">
+        <div><strong>Messages</strong><small>Private to you and the recipient</small></div>
+        <div class="msg-panel-tools"><button class="text-button" type="button" id="refresh-messages">Refresh</button><button type="button" class="lp-dialog-close" id="msg-close" aria-label="Close messages">&times;</button></div>
+      </header>
+      <div id="message-list" class="msg-panel-list"></div>
+      <form id="message-form" class="msg-panel-form">
+        <label class="login-field" for="message-recipient">Send to<select id="message-recipient" name="recipientId" required></select></label>
+        <label class="login-field" for="message-body">Message<textarea id="message-body" name="body" rows="3" maxlength="4000" required></textarea></label>
+        <div class="form-actions"><span class="form-hint">Up to 4,000 characters</span><button class="button button-primary" type="submit">Send</button></div>
+      </form>
+    </section>
+
     <!-- Floating, scrollable PDF viewer. It sits on the left, beside the lesson-plan drawer, so a lesson plan can be read while reviewing it. Drag the header to move it; drag the bottom-right corner to resize it. -->
     <aside id="pdf-panel" class="pdf-panel" role="dialog" aria-label="Document preview" aria-labelledby="pdf-viewer-title" hidden>
       <div class="pdf-panel-head" id="pdf-panel-drag">
@@ -388,6 +370,24 @@
     </aside>
     </div>
 
+    <dialog id="announcement-dialog" class="lp-dialog announcement-dialog" aria-labelledby="announcement-dialog-title">
+      <div class="lp-dialog-head"><div><small>Announcements</small><h3 id="announcement-dialog-title">New announcement</h3></div><button type="button" class="lp-dialog-close" id="announcement-dialog-close" aria-label="Close">&times;</button></div>
+      <form id="announcement-form" class="portal-form lp-dialog-body">
+        <label class="login-field" for="announcement-title">Title<input id="announcement-title" name="title" maxlength="180" required /></label>
+        <label class="login-field" for="announcement-body">Announcement<textarea id="announcement-body" name="body" rows="5" maxlength="10000" required></textarea></label>
+        <div class="form-row">
+          <label class="login-field" for="announcement-duration">Display for<select id="announcement-duration" name="duration">
+            <option value="1d">1 day</option><option value="3d">3 days</option><option value="7d" selected>1 week</option><option value="14d">2 weeks</option><option value="30d">1 month</option><option value="custom">Until a date I choose…</option></select></label>
+          <label class="login-field" for="announcement-until" id="announcement-until-wrap" hidden>Show until (end of day)<input id="announcement-until" type="date" /></label>
+        </div>
+        <div class="login-field"><span>Photos / pubmat (optional, up to 4)</span>
+          <input id="announcement-photos" type="file" accept="image/jpeg,image/png,image/webp,image/gif" multiple />
+          <small class="form-hint">Large pictures are shrunk automatically so they load quickly.</small>
+          <div id="announcement-photo-preview" class="photo-preview"></div></div>
+        <p id="announcement-form-error" class="form-error" role="alert" hidden></p>
+        <div class="form-actions"><span class="form-hint" id="announcement-expiry-hint"></span><button class="button button-primary" type="submit">Publish announcement</button></div>
+      </form>
+    </dialog>
     <dialog id="user-dialog" class="detail-dialog" aria-labelledby="user-dialog-title">
       <form id="user-form">
         <div class="dialog-heading"><div><span class="eyebrow">ACCOUNT MANAGEMENT</span><h2 id="user-dialog-title">Add account</h2></div><button class="icon-button" id="close-user-dialog" type="button" aria-label="Close">×</button></div>
