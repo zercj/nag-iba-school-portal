@@ -18,7 +18,6 @@ const appOrigin = process.env.APP_ORIGIN || process.env.RENDER_EXTERNAL_URL;
 const isProduction = process.env.NODE_ENV === "production";
 const sessionDurationMs = 8 * 60 * 60 * 1000;
 const schoolTimeZone = process.env.SCHOOL_TZ || "Asia/Manila";
-const lateAfterMinutes = 7 * 60 + 29; // logging in after 7:29 AM asks for attendance
 const staticFiles = new Map([
   ["/", ["index.html", "text/html; charset=utf-8"]],
   ["/index.html", ["index.html", "text/html; charset=utf-8"]],
@@ -243,7 +242,7 @@ async function audit(connection, actorId, action, targetType, targetId = null) {
 }
 
 
-// School-local date/time (Philippines by default) so "7:29 AM" means the same thing for everyone.
+// School-local date/time (Philippines by default) so the attendance day rolls over at the same midnight for everyone.
 function schoolNow(date = new Date()) {
   const parts = Object.fromEntries(new Intl.DateTimeFormat("en-CA", {
     timeZone: schoolTimeZone, year: "numeric", month: "2-digit", day: "2-digit",
@@ -357,17 +356,6 @@ async function authenticate(request, response, url) {
       "INSERT INTO sessions (token_hash, user_id, expires_at) VALUES ($1, $2, $3)",
       [tokenDigest(token), user.id, expiresAt],
     );
-    if (user.role === "teacher") {
-      // Signing in at or before 7:29 AM counts as present; later sign-ins are asked in the browser.
-      const now = schoolNow();
-      if (now.minutes <= lateAfterMinutes) {
-        await pool.query(
-          `INSERT INTO attendance_records (teacher_id, attendance_date, status, auto_recorded)
-           VALUES ($1, $2, 'present', TRUE) ON CONFLICT (teacher_id, attendance_date) DO NOTHING`,
-          [user.id, now.date],
-        );
-      }
-    }
     sendJson(response, 200, { user: safeUser(user) }, { "Set-Cookie": sessionCookie(token, expiresAt) });
     return true;
   }
@@ -1606,8 +1594,8 @@ async function handleAttendanceRoutes(request, response, url, actor) {
     sendJson(response, 200, {
       date: now.date, time: now.time, leaveTypes: LEAVE_TYPES,
       record: record && { status: record.status, leaveType: record.leave_type, details: record.details, loggedAt: record.logged_at, auto: record.auto_recorded },
-      // Signing in after 7:29 AM without a record for today asks for attendance.
-      needsPrompt: !record && now.minutes > lateAfterMinutes,
+      // No record for today (school date) means the pop-up is required; this resets at midnight.
+      needsPrompt: !record,
     });
     return true;
   }

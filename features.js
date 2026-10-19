@@ -344,6 +344,7 @@ let attendanceMe = null;      // { date, record, needsPrompt, leaveTypes }
 let attendanceData = null;
 let attendanceChoice = null;
 let attendanceTimer = null;
+let attendanceGuardTimer = null;
 
 async function loadAttendanceMe() {
   if (currentUser?.role !== "teacher") return null;
@@ -357,7 +358,7 @@ function openAttendanceDialog({ required }) {
   const hour = new Date().getHours();
   $("#attendance-kicker").textContent = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
   $("#attendance-title").textContent = required ? "Record your attendance" : "Update today's attendance";
-  $("#attendance-intro").textContent = required ? "You signed in after 7:29 AM. Tell us where you are today." : "Change what you reported for today.";
+  $("#attendance-intro").textContent = required ? "Tell us where you are today. You need to record your attendance before you can use the portal." : "Change what you reported for today.";
   $("#attendance-cancel").hidden = required;
   dialog.dataset.required = required ? "1" : "";
   $("#attendance-leave-type").innerHTML = '<option value="">Choose the type of leave</option>' + (attendanceMe?.leaveTypes || []).map((t) => `<option${attendanceMe?.record?.leaveType === t ? " selected" : ""}>${escapeHtml(t)}</option>`).join("");
@@ -392,12 +393,23 @@ $("#attendance-form").addEventListener("submit", async (event) => {
   } catch (e) { error.textContent = e.message; error.hidden = false; } finally { button.disabled = false; }
 });
 
+async function checkAttendancePrompt() {
+  if (!currentUser || currentUser.role !== "teacher") return;
+  const dialog = $("#attendance-dialog");
+  if (dialog.open && dialog.dataset.required) return;
+  try { await loadAttendanceMe(); } catch (_) { return; }
+  if (attendanceMe?.needsPrompt) openAttendanceDialog({ required: true });
+}
 portalHooks.onLogin.push(async (user) => {
   if (user.role !== "teacher") return;
-  await loadAttendanceMe();
-  if (attendanceMe?.needsPrompt) openAttendanceDialog({ required: true });
+  await checkAttendancePrompt();
+  // Attendance resets every midnight (school time): re-check while the portal stays open.
+  clearInterval(attendanceGuardTimer);
+  attendanceGuardTimer = setInterval(checkAttendancePrompt, 60000);
 });
-portalHooks.onLogout.push(() => { attendanceMe = null; attendanceData = null; clearInterval(attendanceTimer); });
+portalHooks.onLogout.push(() => { attendanceMe = null; attendanceData = null; clearInterval(attendanceTimer); clearInterval(attendanceGuardTimer); const d = $("#attendance-dialog"); d.dataset.required = ""; if (d.open) d.close(); });
+// The required pop-up cannot be dismissed (Esc or otherwise) until attendance is saved.
+$("#attendance-dialog").addEventListener("close", () => { if ($("#attendance-dialog").dataset.required && currentUser?.role === "teacher") setTimeout(() => openAttendanceDialog({ required: true }), 0); });
 
 function attendanceRemark(t) {
   const r = t.record;
@@ -410,7 +422,6 @@ function attendanceRemark(t) {
   return `Present · ${to12h(timeOfDay(r.loggedAt))}`;
 }
 function timeOfDay(iso) { const d = new Date(iso); return `${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}`; }
-const isLateLog = (r) => r && !r.auto && minutesOf(timeOfDay(r.loggedAt)) > 7 * 60 + 29;
 
 function renderAttendance() {
   const data = attendanceData; if (!data) return;
@@ -420,7 +431,7 @@ function renderAttendance() {
     .map(([label, value, tone]) => `<div class="stat-card overview-stat" data-tone="${tone}"><span class="stat-label"><i class="stat-marker"></i>${label}</span><span class="stat-value">${value}</span></div>`).join("");
   const entries = data.teachers.map((t) => ({ ...t, group: lpTeacherGroup(t.id, t.name) }));
   $("#attendance-list").innerHTML = data.teachers.length
-    ? lpGroupedMarkup(entries, (t) => `<button type="button" class="att-card att-card-${t.record?.status || "none"}" data-att-teacher="${escapeHtml(t.id)}"><i class="att-dot att-${t.record?.status || "none"}"></i><span class="att-card-main"><strong>${escapeHtml(t.name)}</strong><small>${escapeHtml(attendanceRemark(t))}</small></span>${isLateLog(t.record) ? '<span class="att-late">Late</span>' : ""}</button>`)
+    ? lpGroupedMarkup(entries, (t) => `<button type="button" class="att-card att-card-${t.record?.status || "none"}" data-att-teacher="${escapeHtml(t.id)}"><i class="att-dot att-${t.record?.status || "none"}"></i><span class="att-card-main"><strong>${escapeHtml(t.name)}</strong><small>${escapeHtml(attendanceRemark(t))}</small></span></button>`)
     : emptyFeed("There are no active teacher accounts yet.");
   // Group cards sit side by side: wrap each group's cards in a grid.
   $("#attendance-list").querySelectorAll(".teacher-group").forEach((g) => {
@@ -434,7 +445,7 @@ function renderAttendanceMe() {
   if (currentUser.role !== "teacher" || !attendanceMe || !attendanceData?.isToday) { host.hidden = true; return; }
   const r = attendanceMe.record;
   host.hidden = false;
-  host.innerHTML = `<div class="att-me"><i class="att-dot att-${r?.status || "none"}"></i><div><strong>Your status today: ${r ? STATUS_LABEL[r.status] : "not recorded yet"}</strong><small>${r ? escapeHtml([r.leaveType, r.details].filter(Boolean).join(" · ") || (r.auto ? "Signed in on time" : "")) : "Choose a status so the school knows where you are."}</small></div><button type="button" class="button button-secondary" id="attendance-update">${r ? "Update" : "Record now"}</button></div>`;
+  host.innerHTML = `<div class="att-me"><i class="att-dot att-${r?.status || "none"}"></i><div><strong>Your status today: ${r ? STATUS_LABEL[r.status] : "not recorded yet"}</strong><small>${r ? escapeHtml([r.leaveType, r.details].filter(Boolean).join(" · ") || "") : "Choose a status so the school knows where you are."}</small></div><button type="button" class="button button-secondary" id="attendance-update">${r ? "Update" : "Record now"}</button></div>`;
 }
 
 async function loadAttendance() {
@@ -456,9 +467,9 @@ function showAttendanceDetail(teacher) {
   $("#attendance-detail-title").textContent = teacher.name;
   const status = r?.status || "none";
   const label = r ? STATUS_LABEL[r.status] : "No record yet";
-  let body = `<div class="att-detail-status att-card-${status}"><i class="att-dot att-${status}"></i><strong>${label}</strong>${isLateLog(r) ? '<span class="att-late">Late</span>' : ""}</div>`;
+  let body = `<div class="att-detail-status att-card-${status}"><i class="att-dot att-${status}"></i><strong>${label}</strong></div>`;
   if (r) {
-    body += `<p class="lp-meta">${r.auto ? "Signed in on time" : "Reported"} at ${to12h(timeOfDay(r.loggedAt))}</p>`;
+    body += `<p class="lp-meta">Reported at ${to12h(timeOfDay(r.loggedAt))}</p>`;
     if (r.status === "leave") body += `<p><strong>Leave type:</strong> ${escapeHtml(r.leaveType || "Not shown")}</p>`;
     if (r.details) body += `<p><strong>${r.status === "travel" ? "Travel details" : "Details"}:</strong> ${escapeHtml(r.details)}</p>`;
     if (r.status !== "present" && !r.leaveType && !r.details) body += '<p class="lp-note">Details are visible only to administrators.</p>';

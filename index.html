@@ -64,14 +64,17 @@
           <button class="nav-link" type="button" data-view="memos"><span class="nav-icon" aria-hidden="true">❐</span>Memos</button>
           <button class="nav-link" type="button" data-view="schedule" data-roles="developer,admin,teacher" hidden><span class="nav-icon" aria-hidden="true">▦</span>Schedule</button>
           <button class="nav-link" type="button" data-view="attendance" data-roles="developer,admin,teacher" hidden><span class="nav-icon" aria-hidden="true">✔</span>Attendance</button>
-          <button class="nav-link" type="button" data-view="settings"><span class="nav-icon" aria-hidden="true">⚙</span>Settings</button>
         </nav>
         <div class="sidebar-bottom">
           <div class="profile">
             <div class="avatar" id="profile-avatar">NH</div>
             <div class="profile-info"><strong id="profile-name">School User</strong><span id="profile-role">Account</span></div>
+            <button class="profile-gear" id="profile-gear" type="button" aria-label="Account options" aria-haspopup="menu" aria-expanded="false">⚙</button>
+            <div class="profile-menu-pop" id="profile-menu" role="menu" hidden>
+              <button type="button" role="menuitem" data-view="settings" id="menu-settings"><span aria-hidden="true">⚙</span> Settings</button>
+              <button type="button" role="menuitem" id="sign-out"><span aria-hidden="true">↩</span> Sign out</button>
+            </div>
           </div>
-          <button class="sign-out-button" id="sign-out" type="button"><span aria-hidden="true">↩</span> Sign out</button>
         </div>
       </aside>
 

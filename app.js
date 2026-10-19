@@ -818,6 +818,15 @@ document.querySelector("#login-form").addEventListener("submit", async (event) =
   }
 });
 
+(() => {
+  const gear = document.querySelector("#profile-gear"), menu = document.querySelector("#profile-menu");
+  const close = () => { menu.hidden = true; gear.setAttribute("aria-expanded", "false"); };
+  gear.addEventListener("click", (e) => { e.stopPropagation(); menu.hidden = !menu.hidden; gear.setAttribute("aria-expanded", String(!menu.hidden)); });
+  menu.addEventListener("click", close);
+  document.addEventListener("click", (e) => { if (!menu.hidden && !e.target.closest(".profile")) close(); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") close(); });
+})();
+
 document.querySelector("#sign-out").addEventListener("click", async () => {
   try {
     await api("/api/auth/logout", { method: "POST" });

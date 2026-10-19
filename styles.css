@@ -893,3 +893,46 @@ body { font-size: 15px; line-height: 1.5; }
 @media (max-width: 520px) { .pdf-panel-link { padding: 6px 8px; } }
 .lp-pdf-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .lp-pdf-name { color: #5b6b85; overflow-wrap: anywhere; }
+
+/* Sidebar: scrollable nav so every item stays reachable */
+.sidebar { overflow: hidden; }
+.brand { margin-bottom: 26px; }
+.main-nav { flex: 1 1 auto; min-height: 0; overflow-y: auto; align-content: start; gap: 3px; padding-right: 2px; scrollbar-width: thin; scrollbar-color: #3a5080 transparent; }
+.nav-link { min-height: 38px; flex: 0 0 auto; }
+.main-nav .nav-link[hidden] { display: none; }
+.sidebar-bottom { flex: 0 0 auto; margin-top: 8px; position: relative; }
+
+/* Profile gear + popup menu */
+.profile { position: relative; margin-bottom: 0; }
+.profile-gear { margin-left: auto; display: grid; width: 32px; height: 32px; place-items: center; border: 0; border-radius: 8px; background: transparent; color: #aab9cc; font-size: 18px; cursor: pointer; }
+.profile-gear:hover, .profile-gear[aria-expanded="true"] { background: #203966; color: #fff; }
+.profile-menu-pop { position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 20; min-width: 170px; padding: 6px; border: 1px solid #314158; border-radius: 10px; background: #1b3777; box-shadow: 0 10px 28px #08143a66; }
+.profile-menu-pop button { display: flex; width: 100%; align-items: center; gap: 10px; padding: 10px 12px; border: 0; border-radius: 7px; background: none; color: #dbe5f3; font-size: 13px; text-align: left; cursor: pointer; }
+.profile-menu-pop button:hover { background: #294679; color: #fff; }
+.profile-info strong { font-size: 13px; }
+.profile-info span { font-size: 11px; }
+
+/* Announcements: bigger */
+.announcement-feed { gap: 18px; }
+.announcement-card { border-radius: 12px; box-shadow: 0 2px 12px #1a29441a; }
+.announcement-text { padding: 22px 26px 24px; }
+.announcement-text .content-card-heading h3 { font-size: 24px; line-height: 1.25; }
+.announcement-text .content-card-heading > span { font-size: 13px; }
+.announcement-text p { margin: 12px 0 14px; font-size: 17px; line-height: 1.7; }
+.announcement-text small { font-size: 13px; }
+.pubmat-1 .pubmat-photo img { max-height: 820px; }
+.pubmat-photo img { max-height: 480px; }
+#overview-announcements .feed-item h3 { font-size: 17px; }
+#overview-announcements .feed-item p { font-size: 15px; }
+
+@media (max-width: 760px) {
+  .sidebar { overflow: visible; }
+  .main-nav { flex: none; overflow-x: auto; overflow-y: hidden; }
+  .sidebar-bottom { margin: 0 0 0 auto; }
+  .profile { display: flex; padding: 0; border: 0; }
+  .profile .avatar, .profile .profile-info { display: none; }
+  .profile-menu-pop { top: calc(100% + 6px); bottom: auto; }
+  .announcement-text { padding: 16px 16px 18px; }
+  .announcement-text .content-card-heading h3 { font-size: 19px; }
+  .announcement-text p { font-size: 15px; }
+}
