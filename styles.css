@@ -875,10 +875,21 @@ body { font-size: 15px; line-height: 1.5; }
 .subject-add-form { display: flex; flex-wrap: wrap; gap: 8px; }
 .subject-add-form input { flex: 1; min-width: 200px; height: 36px; padding: 0 11px; border: 1px solid #e3e8ef; border-radius: 6px; font-size: 12px; }
 
-/* In-page PDF viewer */
-.pdf-viewer-dialog { width: min(1000px, calc(100vw - 24px)); height: calc(100vh - 32px); }
-.pdf-viewer-dialog[open] { display: flex; flex-direction: column; }
+/* Floating PDF viewer: docked on the left (right of the sidebar), beside the lesson-plan drawer, and scrollable. */
+.pdf-panel { position: fixed; z-index: 45; top: 12px; bottom: 12px; left: 258px; width: clamp(360px, calc(100vw - 258px - 640px - 28px), 780px); min-width: 300px; min-height: 260px; max-width: calc(100vw - 24px); display: flex; flex-direction: column; background: #fff; border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 18px 50px #0f1e3a40; overflow: hidden; resize: both; }
+.pdf-panel[hidden] { display: none; }
+.pdf-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 10px 10px 16px; border-bottom: 1px solid var(--line); background: #fff; cursor: grab; user-select: none; touch-action: none; }
+.pdf-panel.is-dragging .pdf-panel-head { cursor: grabbing; }
+.pdf-panel.is-dragging .pdf-viewer-frame { pointer-events: none; }
+.pdf-panel-title { min-width: 0; }
+.pdf-panel-title small { display: block; color: #1748e8; font-size: 11px; font-weight: 700; }
+.pdf-panel-title h3 { margin: 2px 0 0; font-size: 15px; color: #17326e; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pdf-panel-tools { display: flex; align-items: center; gap: 6px; flex: none; }
+.pdf-panel-link { padding: 6px 10px; border-radius: 8px; background: #f1f5fb; color: #17326e; font-size: 12px; font-weight: 600; text-decoration: none; white-space: nowrap; }
+.pdf-panel-link:hover { background: #e4ebf7; }
+.pdf-panel-msg { margin: 0; padding: 10px 16px; background: #fff4e5; color: #8a4b00; font-size: 13px; border-bottom: 1px solid var(--line); }
 .pdf-viewer-frame { flex: 1; width: 100%; min-height: 0; border: 0; background: #eef2f8; }
-.pdf-viewer-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; padding: 10px 16px; border-top: 1px solid var(--line); }
+@media (max-width: 1180px) { .pdf-panel { left: 12px; width: calc(100vw - 24px); resize: none; } .pdf-panel-head { cursor: default; } }
+@media (max-width: 520px) { .pdf-panel-link { padding: 6px 8px; } }
 .lp-pdf-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .lp-pdf-name { color: #5b6b85; overflow-wrap: anywhere; }
