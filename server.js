@@ -18,6 +18,12 @@ const appOrigin = process.env.APP_ORIGIN || process.env.RENDER_EXTERNAL_URL;
 const isProduction = process.env.NODE_ENV === "production";
 const sessionDurationMs = 8 * 60 * 60 * 1000;
 const schoolTimeZone = process.env.SCHOOL_TZ || "Asia/Manila";
+// Lesson plans: every day is due at 5:00 PM Manila time. Anything handed in after that moment is Late;
+// a day with no upload after that moment is Overdue. Calendar dates and times are always judged in Manila time.
+const LP_TZ = "Asia/Manila";
+const LP_NOW_MANILA_SQL = `(NOW() AT TIME ZONE '${LP_TZ}')`;
+const lpDeadlineSql = (alias) => `(${alias}.due_date + TIME '17:00')`;
+const lpPassedLateSql = (tsExpr, alias) => `((${tsExpr}) AT TIME ZONE '${LP_TZ}' > ${lpDeadlineSql(alias)})`;
 const staticFiles = new Map([
   ["/", ["index.html", "text/html; charset=utf-8"]],
   ["/index.html", ["index.html", "text/html; charset=utf-8"]],
@@ -946,11 +952,12 @@ async function handleLessonPlanRoutes(request, response, url, actor) {
     if (![1,2,3].includes(term)) throw new HttpError(400, "Invalid term.");
     const result = await pool.query(`SELECT t.id,t.term_number,t.week_number,t.day_number,to_char(t.due_date,'YYYY-MM-DD') AS due_date,t.teacher_id,t.subject_id,
       u.display_name AS teacher_name,s.name AS subject_name,x.id AS upload_id,x.file_name,x.file_size,
-      CASE WHEN x.id IS NOT NULL THEN x.status WHEN t.due_date < CURRENT_DATE THEN 'Overdue' ELSE 'Awaiting Upload' END AS status,
+      CASE WHEN x.id IS NOT NULL THEN (CASE WHEN x.status='Submitted' AND ${lpPassedLateSql('x.submitted_at','t')} THEN 'Late' ELSE x.status END)
+           WHEN ${LP_NOW_MANILA_SQL} > ${lpDeadlineSql('t')} THEN 'Overdue' ELSE 'Awaiting Upload' END AS status,
       x.admin_feedback,x.admin_revision_file_name,x.submitted_at,
       COALESCE(x.flag_codes,'') AS flag_codes,COALESCE(x.flag_reason,'') AS flag_reason,COALESCE(x.appeal_note,'') AS appeal_note,
       r.original_submitted_at AS retained_submitted_at,
-      (x.submitted_at::date > t.due_date) AS submitted_late,
+      ${lpPassedLateSql('x.submitted_at','t')} AS submitted_late,
       (SELECT COUNT(*)::int FROM lesson_plan_upload_versions v WHERE v.task_id=t.id) AS revision_count
       FROM lesson_plan_generated_tasks t JOIN users u ON u.id=t.teacher_id JOIN subjects s ON s.id=t.subject_id
       LEFT JOIN lesson_plan_uploads x ON x.task_id=t.id
@@ -976,7 +983,7 @@ async function handleLessonPlanRoutes(request, response, url, actor) {
     if (data.subarray(0,5).toString("ascii") !== "%PDF-") throw new HttpError(400, "The uploaded file does not appear to be a valid PDF.");
     const taskId = uploadMatch[1];
     const task = await pool.query(`SELECT t.id,t.due_date,s.name AS subject_name,
-        (t.due_date < CURRENT_DATE) AS is_late_now, (r.original_submitted_at::date > t.due_date) AS is_late_retained, r.original_submitted_at
+        (${LP_NOW_MANILA_SQL} > ${lpDeadlineSql('t')}) AS is_late_now, ${lpPassedLateSql('r.original_submitted_at','t')} AS is_late_retained, r.original_submitted_at
       FROM lesson_plan_generated_tasks t JOIN subjects s ON s.id=t.subject_id
       LEFT JOIN lesson_plan_retained_dates r ON r.task_id=t.id
       WHERE t.id=$1 AND t.teacher_id=$2`, [taskId,actor.id]);

@@ -745,7 +745,7 @@ body { font-size: 15px; line-height: 1.5; }
 /* Lesson-plan calendar drawer (admin) */
 .lp-drawer-scrim { position: fixed; inset: 0; z-index: 38; background: #0f1e3a59; opacity: 0; pointer-events: none; transition: opacity .2s; }
 .lp-drawer-scrim.is-open { opacity: 1; pointer-events: auto; }
-.lp-drawer { position: fixed; top: 0; right: 0; bottom: 0; z-index: 39; display: flex; flex-direction: column; width: min(640px, 100vw); background: #fff; box-shadow: -18px 0 50px #0f1e3a33; transform: translateX(104%); visibility: hidden; transition: transform .25s ease, visibility 0s linear .25s; }
+.lp-drawer { position: fixed; top: 0; right: 0; bottom: 0; z-index: 39; display: flex; flex-direction: column; width: min(760px, 100vw); background: #fff; box-shadow: -18px 0 50px #0f1e3a33; transform: translateX(104%); visibility: hidden; transition: transform .25s ease, visibility 0s linear .25s; }
 .lp-drawer.is-open { transform: none; visibility: visible; transition: transform .25s ease; }
 .lp-drawer-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 18px 20px 12px; border-bottom: 1px solid var(--line); }
 .lp-drawer-head small { color: #1748e8; font-size: 11px; font-weight: 700; }
@@ -876,7 +876,7 @@ body { font-size: 15px; line-height: 1.5; }
 .subject-add-form input { flex: 1; min-width: 200px; height: 36px; padding: 0 11px; border: 1px solid #e3e8ef; border-radius: 6px; font-size: 12px; }
 
 /* Floating PDF viewer: docked on the left (right of the sidebar), beside the lesson-plan drawer, and scrollable. */
-.pdf-panel { position: fixed; z-index: 45; top: 12px; bottom: 12px; left: 258px; width: clamp(360px, calc(100vw - 258px - 640px - 28px), 780px); min-width: 300px; min-height: 260px; max-width: calc(100vw - 24px); display: flex; flex-direction: column; background: #fff; border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 18px 50px #0f1e3a40; overflow: hidden; resize: both; }
+.pdf-panel { position: fixed; z-index: 45; top: 12px; bottom: 12px; left: 258px; width: clamp(360px, calc(100vw - 258px - 760px - 28px), 780px); min-width: 300px; min-height: 260px; max-width: calc(100vw - 24px); display: flex; flex-direction: column; background: #fff; border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 18px 50px #0f1e3a40; overflow: hidden; resize: both; }
 .pdf-panel[hidden] { display: none; }
 .pdf-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 10px 10px 16px; border-bottom: 1px solid var(--line); background: #fff; cursor: grab; user-select: none; touch-action: none; }
 .pdf-panel.is-dragging .pdf-panel-head { cursor: grabbing; }
@@ -975,3 +975,38 @@ body { font-size: 15px; line-height: 1.5; }
 /* ---------- New announcement pop-up ---------- */
 .announcement-dialog { width: min(640px, calc(100vw - 24px)); }
 @media (max-width: 760px) { .nav-sublink { min-height: 42px; font-size: 14px; } .nav-sub { margin-left: 18px; } }
+
+
+/* ---- Lesson plans: viewer as a full pop-out when opened from inside a modal pop-up ---- */
+.pdf-panel.in-modal { left: 12px; right: 12px; top: 12px; bottom: 12px; width: auto; max-width: none; z-index: 60; resize: none; }
+.pdf-panel.in-modal .pdf-panel-head { cursor: default; }
+
+/* ---- Lesson plans: drawer with a scrollable teacher list on the left ---- */
+.lp-drawer-main { display: flex; flex: 1; min-height: 0; }
+.lp-teacher-list { flex: none; width: 200px; overflow-y: auto; padding: 10px 8px; border-right: 1px solid var(--line); background: #f8fafd; display: flex; flex-direction: column; gap: 4px; }
+.lp-teacher-item { display: flex; align-items: center; gap: 6px; width: 100%; padding: 9px 10px; border: 0; border-radius: 9px; background: transparent; color: #26365a; font: inherit; font-size: 13px; font-weight: 600; text-align: left; cursor: pointer; }
+.lp-teacher-item:hover { background: #e9eff9; }
+.lp-teacher-item.is-active { background: #1748e8; color: #fff; }
+.lp-teacher-name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.lp-drawer-content { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+@media (max-width: 640px) { .lp-teacher-list { width: 118px; } .lp-teacher-item { font-size: 12px; padding: 8px 7px; } }
+
+/* ---- Lesson plans: simpler overview ---- */
+.lp-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin: 0 0 14px; }
+.lp-strip-item { padding: 6px 12px; border-radius: 999px; background: #eef2f9; color: #26365a; font-size: 13px; }
+.lp-strip-item b { font-size: 15px; margin-right: 2px; }
+.lp-strip-green { background: #e3f6ea; } .lp-strip-late { background: #fdf6cf; } .lp-strip-overdue { background: #fde6e6; color: #a31d1d; }
+.lp-strip-note { margin-left: auto; color: #5b6b86; font-size: 12px; }
+.lp-ov-group { margin-bottom: 10px; border: 1px solid var(--line); border-radius: 12px; background: #fff; }
+.lp-ov-group > summary { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; font-weight: 700; color: #17326e; cursor: pointer; list-style: none; }
+.lp-ov-group > summary::-webkit-details-marker, .lp-ov-item > summary::-webkit-details-marker { display: none; }
+.lp-ov-group > summary::before, .lp-ov-item > summary::before { content: "\25B8"; margin-right: 8px; transition: transform .15s; }
+.lp-ov-group[open] > summary::before, .lp-ov-item[open] > summary::before { transform: rotate(90deg); }
+.lp-ov-group > summary span:first-child { flex: 1; }
+.lp-ov-count { padding: 2px 9px; border-radius: 999px; background: #eef2f9; font-size: 12px; }
+.lp-ov-group-body { padding: 0 12px 10px; }
+.lp-ov-item { margin-bottom: 6px; border: 1px solid #e6ebf3; border-radius: 10px; background: #fff; }
+.lp-ov-item > summary { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 10px 12px; cursor: pointer; list-style: none; }
+.lp-ov-item > summary small { color: #5b6b86; }
+.lp-ov-item[open] > summary { background: #f6f8fc; border-bottom: 1px solid #eef1f5; border-radius: 10px 10px 0 0; }
+.lp-ov-body { padding: 8px 12px 12px; }

@@ -5,9 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#f3f7fd" />
     <title>Nag-iba National High School | School Portal</title>
-    <link rel="stylesheet" href="styles.css" />
-    <script src="app.js" defer></script>
-    <script src="features.js" defer></script>
+    <link rel="stylesheet" href="styles.css?v=20261020" />
+    <script src="app.js?v=20261020" defer></script>
+    <script src="features.js?v=20261020" defer></script>
   </head>
   <body>
     <a class="skip-link" href="#main-content">Skip to main content</a>
@@ -138,7 +138,7 @@
               <div id="lp-status-summary" class="lp-status-summary" hidden></div>
             </div>
             <section class="panel compose-panel" data-lp-pane="overview" data-admin-only id="lp-assignments-panel" hidden>
-              <div class="panel-heading"><div><h2 id="lp-assignments-heading">Teachers and subjects</h2><p>Each subject has its own calendar. Select “View plans” to open it.</p></div><label class="search-box"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m16 16 4 4"/></svg><input id="lp-assign-search" type="search" placeholder="Search teacher or subject" aria-label="Search teacher or subject" autocomplete="off" /></label></div>
+              <div class="panel-heading"><div><h2 id="lp-assignments-heading">Teachers and subjects</h2><p>Tap a teacher or subject to expand it.</p></div><label class="search-box"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m16 16 4 4"/></svg><input id="lp-assign-search" type="search" placeholder="Search teacher or subject" aria-label="Search teacher or subject" autocomplete="off" /></label></div>
               <div id="lp-assignment-list" class="content-feed"></div>
             </section>
 
@@ -194,11 +194,15 @@
                 <div><small id="lp-drawer-kicker">Lesson plans</small><h3 id="lp-task-detail-heading">Lesson-plan calendar</h3></div>
                 <button type="button" class="lp-dialog-close" id="lp-close-details" aria-label="Close calendar">&times;</button>
               </header>
-              <div class="lp-drawer-controls">
-                <label class="login-field" for="lp-drawer-teacher">Teacher<select id="lp-drawer-teacher"></select></label>
-                <div id="lp-drawer-subjects" class="lp-subject-pills" role="tablist" aria-label="Subjects of the selected teacher"></div>
+              <div class="lp-drawer-main">
+                <nav id="lp-drawer-teachers" class="lp-teacher-list" aria-label="Teachers"></nav>
+                <div class="lp-drawer-content">
+                  <div class="lp-drawer-controls">
+                    <div id="lp-drawer-subjects" class="lp-subject-pills" role="tablist" aria-label="Subjects of the selected teacher"></div>
+                  </div>
+                  <div id="lesson-plan-task-list" class="lp-cal-host lp-drawer-body"></div>
+                </div>
               </div>
-              <div id="lesson-plan-task-list" class="lp-cal-host lp-drawer-body"></div>
             </aside>
 
             <!-- TEACHER: one calendar per subject -->

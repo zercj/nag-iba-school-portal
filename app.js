@@ -82,6 +82,7 @@ function showToast(message) {
 }
 
 function showLogin() {
+  if (typeof closePdfViewer === "function") closePdfViewer();
   portalHooks.onLogout.forEach((hook) => { try { hook(); } catch (_) {} });
   currentUser = null;
   document.querySelector("#dashboard-app").hidden = true;
@@ -310,7 +311,9 @@ const lpFlagged=t=>!!t.upload_id && !!t.flag_codes && !["approved","completed"].
 const lpTriBadge=(n,label)=>n>0?`<span class="lp-tri-badge" title="${n} ${label||"flagged"}">${LP_TRI}${n>1?`<b>${n}</b>`:""}</span>`:"";
 function lpDateLabel(iso,opts){ const [y,m,d]=iso.split("-").map(Number); return new Intl.DateTimeFormat(undefined,opts||{weekday:"long",month:"long",day:"numeric",year:"numeric"}).format(new Date(y,m-1,d)); }
 function lpChip(t){ const i=lpInfo(t); return `<span class="lp-chip lp-${i.tone}">${i.label}</span>`; }
-function lpTodayIso(){ const n=new Date(); return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,"0")}-${String(n.getDate()).padStart(2,"0")}`; }
+// Lesson plans always run on Manila (Philippine) time, whatever the device clock says. Each day is due at 5:00 PM.
+const LP_TZ="Asia/Manila", LP_DUE_HOUR=17;
+function lpTodayIso(){ return new Intl.DateTimeFormat("en-CA",{timeZone:LP_TZ,year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date()); }
 
 /* ---------- Lesson plans: state ---------- */
 let lessonPlanTasks = [];
@@ -354,6 +357,16 @@ function lpTeacherGroup(teacherId,teacherName){
 const lpNeedsReview=t=>!!t.upload_id && ["submitted","late"].includes(String(t.status||"").toLowerCase());
 const lpDot=n=>n>0?`<span class="review-dot" title="${n} to review" aria-label="${n} to review">${n}</span>`:"";
 const accOpen={assign:null,summary:null};
+/* Overview: native collapsible rows. The open/closed state survives re-renders. */
+const lpOvOpen=new Set(["g-teacher","g-subject"]);
+function ovItem(key,head,body,cls){
+  const force=!!lpNorm(lpAssignQuery);
+  return `<details class="lp-ov-item ${cls||""}" data-ov="${escapeHtml(key)}"${(force||lpOvOpen.has(key))?" open":""}><summary>${head}</summary><div class="lp-ov-body">${body}</div></details>`;
+}
+function ovGroup(key,title,count,inner){
+  return `<details class="lp-ov-group" data-ov="${key}"${lpOvOpen.has(key)?" open":""}><summary><span>${title}</span><span class="lp-ov-count">${count}</span></summary><div class="lp-ov-group-body">${inner}</div></details>`;
+}
+document.addEventListener("toggle",(event)=>{ const d=event.target; if(!d.matches?.("details[data-ov]")) return; if(d.open) lpOvOpen.add(d.dataset.ov); else lpOvOpen.delete(d.dataset.ov); },true);
 let lpAssignQuery="", summaryQuery="", lpTeachersCache=[];
 const lpNorm=v=>String(v||"").toLowerCase().replace(/\s+/g," ").trim();
 // Keep a teacher if the query matches the teacher or any subject; if only subjects match, keep just those subjects.
@@ -450,22 +463,23 @@ function openLpDrawer(teacherId,subjectId){
   panel.classList.add("is-open"); panel.setAttribute("aria-hidden","false");
   document.querySelector("#lp-drawer-scrim").classList.add("is-open");
   renderLpDrawer();
-  panel.querySelector("select")?.focus({preventScroll:true});
+  panel.querySelector(".lp-teacher-item.is-active")?.focus({preventScroll:true});
 }
 function renderLpDrawer(){
   const panel=document.querySelector("#lesson-plan-task-panel");
-  const select=document.querySelector("#lp-drawer-teacher");
+  const teacherNav=document.querySelector("#lp-drawer-teachers");
   const teachers=new Map();
   lessonPlanTasks.forEach(t=>{ if(!teachers.has(String(t.teacher_id))) teachers.set(String(t.teacher_id),{id:String(t.teacher_id),name:t.teacher_name,review:0,flagged:0}); const g=teachers.get(String(t.teacher_id)); if(lpNeedsReview(t)) g.review++; if(lpFlagged(t)) g.flagged++; });
   const list=[...teachers.values()].sort((a,b)=>a.name.localeCompare(b.name));
   document.querySelector("#lp-drawer-kicker").textContent=`Term ${lpTerm()||"–"} · Lesson plans`;
   if(!list.length){
-    select.innerHTML='<option value="">No teachers scheduled</option>'; document.querySelector("#lp-drawer-subjects").innerHTML="";
+    teacherNav.innerHTML='<p class="lp-note">No teachers scheduled</p>'; document.querySelector("#lp-drawer-subjects").innerHTML="";
     document.querySelector("#lp-task-detail-heading").textContent="Lesson-plan calendar";
     document.querySelector("#lesson-plan-task-list").innerHTML=emptyFeed("No teacher has a lesson-plan schedule for this term yet."); return;
   }
   if(!teachers.has(String(selectedLpTeacherId))) selectedLpTeacherId=list[0].id;
-  select.innerHTML=list.map(g=>`<option value="${escapeHtml(g.id)}" ${g.id===String(selectedLpTeacherId)?"selected":""}>${escapeHtml(g.name)}${g.flagged?" \u26A0":""}${g.review?` (${g.review} to review)`:""}</option>`).join("");
+  teacherNav.innerHTML=list.map(g=>{const on=g.id===String(selectedLpTeacherId);return `<button type="button" class="lp-teacher-item${on?" is-active":""}" data-lp-drawer-teacher="${escapeHtml(g.id)}" aria-current="${on}"><span class="lp-teacher-name">${escapeHtml(g.name)}</span>${g.flagged?`<span class="lp-pill-tri">${LP_TRI}</span>`:""}${g.review?`<span class="lp-pill-alert" title="${g.review} to review">${g.review}</span>`:""}</button>`;}).join("");
+  teacherNav.querySelector(".is-active")?.scrollIntoView({block:"nearest"});
   const subjects=new Map();
   lessonPlanTasks.filter(t=>String(t.teacher_id)===String(selectedLpTeacherId)).forEach(t=>{ const k=String(t.subject_id); if(!subjects.has(k)) subjects.set(k,{id:k,name:t.subject_name,review:0,flagged:0,overdue:0}); const g=subjects.get(k); if(lpNeedsReview(t)) g.review++; if(lpFlagged(t)) g.flagged++; if(lpInfo(t).tone==="overdue") g.overdue++; });
   const subjectList=[...subjects.values()].sort((a,b)=>a.name.localeCompare(b.name));
@@ -503,10 +517,10 @@ function renderLessonPlanTasks() {
 function lpTaskControls(t, admin){
   const submitted=!!t.upload_id;
   const state=String(t.status||"").toLowerCase();
-  const revisionLink=t.admin_revision_file_name?`<button type="button" class="action-link" data-view-file="/api/lesson-plans/uploads/${t.upload_id}/revision-file" data-view-title="${escapeHtml(t.admin_revision_file_name)}">Attached PDF from the administrator: ${escapeHtml(t.admin_revision_file_name)}</button>`:"";
+  const revisionLink=t.admin_revision_file_name?`<button type="button" class="action-link" data-view-file="/api/lesson-plans/uploads/${t.upload_id}/revision-file" data-view-title="${escapeHtml(t.admin_revision_file_name)}">Returned for revision: ${escapeHtml(t.admin_revision_file_name)}</button> <a class="action-link" href="/api/lesson-plans/uploads/${t.upload_id}/revision-file?download=1">Download</a>`:"";
   const feedback=t.admin_feedback?`<p class="lp-feedback"><strong>Administrator's comment:</strong> ${escapeHtml(t.admin_feedback)}</p>`:"";
   const history=Number(t.revision_count)>0?`<details><summary>View previous revisions (${t.revision_count})</summary><div class="lp-history" data-history-task="${t.id}">Loading revision history…</div></details>`:"";
-  const subInfo=submitted?`<p class="lp-meta">Passed ${formatDate(t.submitted_at)}${t.submitted_late?" · after the due date":""}${Number(t.revision_count)>0?` · ${t.revision_count} earlier revision(s)`:""}</p>`:"";
+  const subInfo=submitted?`<p class="lp-meta">Passed ${formatDate(t.submitted_at)}${t.submitted_late?" · after the 5:00 PM due time (Late)":""}${Number(t.revision_count)>0?` · ${t.revision_count} earlier revision(s)`:""}</p>`:"";
   const pdfLink=submitted?`<div class="lp-pdf-row"><button type="button" class="button button-primary lp-view-pdf" data-view-file="/api/lesson-plans/uploads/${t.upload_id}/file" data-view-title="${escapeHtml(t.file_name)}">View lesson plan</button><a class="action-link" href="/api/lesson-plans/uploads/${t.upload_id}/file?download=1">Download</a><small class="lp-pdf-name">${escapeHtml(t.file_name)}</small></div>`:"";
   const flagBanner=lpFlagged(t)?`<div class="lp-flag-banner" role="note">${LP_TRI}<div><strong>${admin?"Needs a closer look":"Submitted with a warning"}</strong><p>${escapeHtml(t.flag_reason||"This upload was flagged.")}</p>${t.appeal_note?`<p><em>${admin?"Teacher's note":"Your note"}:</em> ${escapeHtml(t.appeal_note)}</p>`:""}<small>${admin?"The warning clears when you approve this lesson plan.":"The warning clears once the administrator approves it."}</small></div></div>`:"";
   const retained=(!submitted&&t.retained_submitted_at)?`<p class="lp-note">${admin?"Submission deleted. The teacher keeps the original passing date":"An administrator removed your earlier submission. Your original passing date"} (${escapeHtml(formatDate(t.retained_submitted_at))}) ${admin?"and must upload again.":"is kept. Please upload again."}</p>`:"";
@@ -538,6 +552,7 @@ function renderLpDialog(){
   if(!list.length){ dlg.close(); return; }
   document.querySelector("#lp-day-kicker").textContent=`Term ${list[0].term_number} · ${list[0].subject_name}`;
   document.querySelector("#lp-day-title").textContent=lpDateLabel(lpOpenDay.date);
+  document.querySelector("#lp-day-kicker").textContent+=" · due 5:00 PM (Manila)";
   document.querySelector("#lp-day-body").innerHTML=list.map(t=>{
     const i=lpInfo(t);
     return `<article class="lp-day-card lp-${i.tone}"><div class="lp-day-card-head"><div><strong>Week ${t.week_number} · Day ${t.day_number}</strong>${admin?`<small>${escapeHtml(t.teacher_name)}</small>`:""}</div>${lpChip(t)}</div><div class="lp-day-card-body">${lpTaskControls(t,admin)}</div></article>`;
@@ -548,7 +563,7 @@ function lpLoadHistory(root){
   root.querySelectorAll("[data-history-task]").forEach(wrap=>{
     if(wrap.dataset.loaded) return; wrap.dataset.loaded="1";
     api(`/api/lesson-plans/tasks/${wrap.dataset.historyTask}/history`).then(result=>{
-      wrap.innerHTML=result.versions.length ? result.versions.map(v=>`<p><button type="button" class="action-link" data-view-file="/api/lesson-plans/versions/${v.id}/file" data-view-title="${escapeHtml(v.file_name)}">Revision ${v.version_number}: ${escapeHtml(v.file_name)}</button> · ${escapeHtml(v.status)} · ${formatDate(v.submitted_at)}${v.admin_feedback?`<br>Feedback: ${escapeHtml(v.admin_feedback)}`:""}</p>`).join("") : "No previous revisions.";
+      wrap.innerHTML=result.versions.length ? result.versions.map(v=>`<p><button type="button" class="action-link" data-view-file="/api/lesson-plans/versions/${v.id}/file" data-view-title="${escapeHtml(v.file_name)}">Revision ${v.version_number}: ${escapeHtml(v.file_name)}</button> <a class="action-link" href="/api/lesson-plans/versions/${v.id}/file?download=1">Download</a> · ${escapeHtml(v.status)} · ${formatDate(v.submitted_at)}${v.admin_feedback?`<br>Feedback: ${escapeHtml(v.admin_feedback)}`:""}</p>`).join("") : "No previous revisions.";
     }).catch(()=>{wrap.textContent="Revision history could not be loaded.";});
   });
 }
@@ -565,18 +580,16 @@ function renderLessonPlanDashboard() {
   const submitted=lessonPlanTasks.filter(t=>!!t.upload_id).length;
   const approved=lessonPlanTasks.filter(t=>["approved","completed"].includes(String(t.status||"").toLowerCase())).length;
   const pending=lessonPlanTasks.filter(t=>!t.upload_id).length;
-  const cards=[
-    {label:"Required lesson plans",value:total,tone:"blue"},
-    {label:"Submitted",value:submitted,tone:"teal"},
-    {label:"Approved",value:approved,tone:"green"},
-    {label:"Awaiting upload",value:pending,tone:"amber"}
-  ];
-  statsHost.innerHTML=cards.map(c=>`<div class="stat-card overview-stat" data-tone="${c.tone}"><span class="stat-label"><i class="stat-marker"></i>${c.label}</span><span class="stat-value">${c.value}</span></div>`).join("");
   const tones={overdue:0,done:0,"done-late":0};
   lessonPlanTasks.forEach(t=>{const k=lpInfo(t).tone; if(k in tones) tones[k]++;});
-  const sum=document.querySelector("#lp-status-summary");
-  sum.hidden=!term;
-  sum.innerHTML=`<span class="lp-sum lp-overdue"><i class="lp-dot lp-overdue"></i><b>${tones.overdue}</b> Overdue</span><span class="lp-sum lp-done"><i class="lp-dot lp-done"></i><b>${tones.done}</b> Completed on time</span><span class="lp-sum lp-done-late"><i class="lp-dot lp-done-late"></i><b>${tones["done-late"]}</b> Completed late</span>`;
+  // One compact line instead of a wall of cards.
+  statsHost.className="lp-strip";
+  statsHost.innerHTML=[
+    ["blue","Required",total],["teal","Submitted",submitted],["green","Approved",approved],
+    ["late","Late",tones["done-late"]],["overdue","Overdue",tones.overdue]
+  ].map(([tone,label,value])=>`<span class="lp-strip-item lp-strip-${tone}"><b>${value}</b> ${label}</span>`).join("")
+    +`<span class="lp-strip-note">Due 5:00 PM Manila time</span>`;
+  const sum=document.querySelector("#lp-status-summary"); sum.hidden=true; sum.innerHTML="";
   const admin=isLpAdmin();
   if(!admin) return;
   const group=(key)=>{
@@ -619,15 +632,35 @@ function renderLpAssignments(teachers){
   const entries=[...byTeacher.values()].sort((x,y)=>x.name.localeCompare(y.name)).map(g=>({...g,items:lpFilterSubjects(g.name,g.items,a=>a.subject_name,lpAssignQuery),group:lpTeacherGroup(g.id,g.name)})).filter(g=>g.items.length);
   if(!entries.length){ host.innerHTML=emptyFeed(`No teacher or subject matches "${lpAssignQuery}".`); return; }
   if(lpNorm(lpAssignQuery) && entries.length===1) accOpen.assign=entries[0].id;
-  host.setAttribute("data-acc-root","");
-  host.innerHTML=lpGroupedMarkup(entries,g=>{
+  const overdueBy=new Map();
+  lessonPlanTasks.forEach(t=>{ if(lpInfo(t).tone==="overdue"){const k=`${t.teacher_id}|${t.subject_id}`; overdueBy.set(k,(overdueBy.get(k)||0)+1);} });
+  const odChip=n=>n?`<span class="lp-chip lp-overdue">${n} overdue</span>`:"";
+  const teacherHtml=lpGroupedMarkup(entries,g=>{
     const tReview=g.items.reduce((n,a)=>n+(reviewBySubject.get(`${a.teacher_id}|${a.subject_id}`)||0),0);
-    const tFlag=lessonPlanTasks.filter(t=>String(t.teacher_id)===String(g.id)&&lpFlagged(t)).length;const head=`<span class="acc-name">${escapeHtml(g.name)}</span>${lpDot(tReview)}${lpTriBadge(tFlag)}<small>${g.items.length} subject${g.items.length>1?"s":""}</small>`;
+    const tSub=g.items.reduce((n,a)=>n+stats.get(`${a.teacher_id}|${a.subject_id}`).submitted,0), tTot=g.items.reduce((n,a)=>n+stats.get(`${a.teacher_id}|${a.subject_id}`).total,0), tOd=g.items.reduce((n,a)=>n+(overdueBy.get(`${a.teacher_id}|${a.subject_id}`)||0),0);
+    const tFlag=lessonPlanTasks.filter(t=>String(t.teacher_id)===String(g.id)&&lpFlagged(t)).length;const head=`<span class="acc-name">${escapeHtml(g.name)}</span>${lpDot(tReview)}${lpTriBadge(tFlag)}<small>${g.items.length} subject${g.items.length>1?"s":""} · ${tSub}/${tTot} submitted</small>${odChip(tOd)}`;
     const daysOf=(a)=>{const set=new Set();lessonPlanTasks.forEach(t=>{if(String(t.teacher_id)===String(a.teacher_id)&&String(t.subject_id)===String(a.subject_id)){const [y,m,d]=lpDay(t).split("-").map(Number);const wd=new Date(y,m-1,d).getDay();if(wd>=1&&wd<=5)set.add(wd);}});return set;};
     const dayChips=(a)=>{const cur=daysOf(a);return `<fieldset class="day-picker lp-edit-days" data-orig="${[...cur].sort().join(",")}"><legend>Days taught \u00b7 Term ${term}</legend>${[[1,"Mon"],[2,"Tue"],[3,"Wed"],[4,"Thu"],[5,"Fri"]].map(([v,l])=>`<label class="day-chip"><input type="checkbox" name="weekday" value="${v}" ${cur.has(v)?"checked":""}/><span>${l}</span></label>`).join("")}</fieldset>`;};
     const body=g.items.map(a=>{const st=stats.get(`${a.teacher_id}|${a.subject_id}`);const rv=reviewBySubject.get(`${a.teacher_id}|${a.subject_id}`)||0;const fl=lessonPlanTasks.filter(t=>String(t.teacher_id)===String(a.teacher_id)&&String(t.subject_id)===String(a.subject_id)&&lpFlagged(t)).length;return `<div class="lp-assignment-row"><div><strong>${escapeHtml(a.subject_name)}${lpDot(rv)}${lpTriBadge(fl)}</strong><small>${st.submitted} of ${st.total} submitted</small></div><div class="row-actions"><button type="button" class="action-link" data-lp-assignment-open="${a.teacher_id}|${a.subject_id}|${escapeHtml(a.subject_name)}">View plans</button><button type="button" class="action-link" data-lp-edit="${a.id}">Edit</button><button type="button" class="action-link danger-link" data-lp-remove="${a.id}">Delete</button></div></div><form class="lp-assignment-edit" data-lp-edit-form="${a.id}" hidden><label class="login-field">Teacher<select name="teacherId" required>${teachers.map(u=>`<option value="${u.id}" ${String(u.id)===String(a.teacher_id)?"selected":""}>${escapeHtml(u.displayName)}</option>`).join("")}</select></label><label class="login-field">Subject name<input name="subjectName" maxlength="160" required value="${escapeHtml(a.subject_name)}"></label>${dayChips(a)}<div class="form-actions"><button class="button button-primary" type="submit">Save changes</button><button class="button button-secondary" type="button" data-lp-cancel-edit="${a.id}">Cancel</button></div><small>Uploaded files and revision history are retained. Days with a submission are never removed.</small></form>`;}).join("");
-    return accItem("assign",g.id,head,body,"content-card lp-assignment-card");
+    return ovItem("t"+g.id,head,body,"lp-ov-teacher");
   });
+
+  // Same data, grouped by subject: which teachers teach it and how far along each one is.
+  const bySubject=new Map();
+  scheduled.forEach(a=>{
+    const q=lpNorm(lpAssignQuery);
+    if(q && !lpNorm(a.subject_name).includes(q) && !lpNorm(a.teacher_name).includes(q)) return;
+    const k=lpNorm(a.subject_name); if(!bySubject.has(k)) bySubject.set(k,{name:a.subject_name,rows:[]});
+    bySubject.get(k).rows.push(a);
+  });
+  const subjectEntries=[...bySubject.values()].sort((x,y)=>x.name.localeCompare(y.name));
+  const subjectHtml=subjectEntries.map(g=>{
+    const sSub=g.rows.reduce((n,a)=>n+stats.get(`${a.teacher_id}|${a.subject_id}`).submitted,0), sTot=g.rows.reduce((n,a)=>n+stats.get(`${a.teacher_id}|${a.subject_id}`).total,0), sOd=g.rows.reduce((n,a)=>n+(overdueBy.get(`${a.teacher_id}|${a.subject_id}`)||0),0), sRev=g.rows.reduce((n,a)=>n+(reviewBySubject.get(`${a.teacher_id}|${a.subject_id}`)||0),0);
+    const head=`<span class="acc-name">${escapeHtml(g.name)}</span>${lpDot(sRev)}<small>${g.rows.length} teacher${g.rows.length>1?"s":""} · ${sSub}/${sTot} submitted</small>${odChip(sOd)}`;
+    const body=g.rows.sort((x,y)=>x.teacher_name.localeCompare(y.teacher_name)).map(a=>{const st=stats.get(`${a.teacher_id}|${a.subject_id}`);const od=overdueBy.get(`${a.teacher_id}|${a.subject_id}`)||0;return `<div class="lp-assignment-row"><div><strong>${escapeHtml(a.teacher_name)}</strong><small>${st.submitted} of ${st.total} submitted${od?` · <span class="lp-text-overdue">${od} overdue</span>`:""}</small></div><div class="row-actions"><button type="button" class="action-link" data-lp-assignment-open="${a.teacher_id}|${a.subject_id}|${escapeHtml(a.subject_name)}">View plans</button></div></div>`;}).join("");
+    return ovItem("s"+lpNorm(g.name),head,body,"lp-ov-subject");
+  }).join("");
+  host.innerHTML=ovGroup("g-teacher","By teacher",entries.length,teacherHtml)+ovGroup("g-subject","By subject",subjectEntries.length,subjectHtml||emptyFeed("No subject matches."));
 }
 
 async function refreshLessonPlans() {
@@ -1045,7 +1078,7 @@ document.querySelector("#lp-subject-progress").addEventListener("keydown",(event
 document.querySelector("#lp-close-details").addEventListener("click",closeLpDrawer);
 document.querySelector("#lp-drawer-scrim").addEventListener("click",closeLpDrawer);
 document.addEventListener("keydown",(event)=>{ if(event.key==="Escape" && lpDrawer.open && !document.querySelector("dialog[open]")) closeLpDrawer(); });
-document.querySelector("#lp-drawer-teacher").addEventListener("change",(event)=>{ selectedLpTeacherId=event.target.value; selectedLpSubjectId=null; renderLpDrawer(); });
+document.querySelector("#lp-drawer-teachers").addEventListener("click",(event)=>{ const b=event.target.closest("[data-lp-drawer-teacher]"); if(!b)return; selectedLpTeacherId=b.dataset.lpDrawerTeacher; selectedLpSubjectId=null; renderLpDrawer(); });
 document.querySelector("#lp-drawer-subjects").addEventListener("click",(event)=>{ const b=event.target.closest("[data-lp-drawer-subject]"); if(!b)return; selectedLpSubjectId=b.dataset.lpDrawerSubject; renderLpDrawer(); });
 document.querySelector("#lp-teacher-progress").addEventListener("click",(event)=>{
   const b=event.target.closest("[data-lp-open-teacher]"); if(!b)return;
@@ -1402,21 +1435,94 @@ document.addEventListener("DOMContentLoaded", restoreSession);
 
 document.querySelector("#photo-dialog-close").addEventListener("click", () => document.querySelector("#photo-dialog").close());
 
-/* ---------- In-page PDF viewer: lets administrators read a lesson plan without downloading it ---------- */
+/* ---------- In-page PDF viewer: read a lesson plan without downloading it. "Open in new tab" and "Download" are always offered. ---------- */
+/* The viewer is a floating panel on the left (not a blocking pop-up): the page and the lesson-plan drawer stay usable while it is open. */
+function pdfPanelMessage(text) {
+  const note = document.querySelector("#pdf-panel-msg");
+  note.textContent = text || "";
+  note.hidden = !text;
+}
+const pdfPanelHome = document.querySelector("#pdf-panel")?.parentElement;
+function placePdfPanel() {
+  // A modal dialog (e.g. the teacher's day pop-up) makes the rest of the page inert, so while one is open the
+  // viewer is moved inside it and shown as a full-screen pop-out. Otherwise it sits beside the drawer.
+  const panel = document.querySelector("#pdf-panel");
+  const modal = document.querySelector("dialog[open]");
+  panel.removeAttribute("style");
+  if (modal) { if (panel.parentElement !== modal) modal.appendChild(panel); panel.classList.add("in-modal"); }
+  else { if (pdfPanelHome && panel.parentElement !== pdfPanelHome) pdfPanelHome.appendChild(panel); panel.classList.remove("in-modal"); }
+}
 function openPdfViewer(url, title) {
-  const dialog = document.querySelector("#pdf-viewer-dialog");
+  const panel = document.querySelector("#pdf-panel");
+  placePdfPanel();
+  const frame = document.querySelector("#pdf-viewer-frame");
   document.querySelector("#pdf-viewer-title").textContent = title || "Document";
   document.querySelector("#pdf-viewer-open").href = url;
   document.querySelector("#pdf-viewer-download").href = `${url}${url.includes("?") ? "&" : "?"}download=1`;
-  document.querySelector("#pdf-viewer-frame").src = url;
-  if (!dialog.open) dialog.showModal();
+  pdfPanelMessage("");
+  panel.hidden = false;
+  document.body.classList.add("pdf-panel-open");
+  // #view=FitH makes the page fit the panel width; the browser's own PDF viewer then scrolls through every page.
+  frame.src = `${url}#toolbar=1&navpanes=0&view=FitH`;
 }
+function closePdfViewer() {
+  const panel = document.querySelector("#pdf-panel");
+  if (!panel || panel.hidden) return;
+  panel.hidden = true;
+  document.body.classList.remove("pdf-panel-open");
+  placePdfPanel();
+  document.querySelector("#pdf-viewer-frame").src = "about:blank";
+  pdfPanelMessage("");
+}
+// If the server answers with an error instead of a PDF, say so in the panel instead of showing a blank page.
+document.querySelector("#pdf-viewer-frame").addEventListener("load", (event) => {
+  const frame = event.currentTarget;
+  if (document.querySelector("#pdf-panel").hidden || !frame.getAttribute("src") || frame.getAttribute("src") === "about:blank") return;
+  try {
+    const doc = frame.contentDocument;
+    const type = (doc && doc.contentType) || "";
+    if (doc && (type.includes("json") || type.startsWith("text/"))) {
+      const raw = ((doc.body && doc.body.innerText) || "").trim();
+      let message = raw;
+      try { message = JSON.parse(raw).error || raw; } catch { /* not JSON; show the text as is */ }
+      pdfPanelMessage(message || "This file could not be loaded. Try Open in new tab or Download.");
+    }
+  } catch { /* cross-origin or plugin document: nothing to inspect */ }
+});
+// Drag the header to move the panel (desktop widths only).
+(() => {
+  const panel = document.querySelector("#pdf-panel");
+  const handle = document.querySelector("#pdf-panel-drag");
+  let start = null;
+  handle.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0 || event.target.closest("a, button") || window.innerWidth <= 1180) return;
+    const box = panel.getBoundingClientRect();
+    panel.style.bottom = "auto"; panel.style.height = `${box.height}px`; panel.style.width = `${box.width}px`;
+    panel.style.left = `${box.left}px`; panel.style.top = `${box.top}px`;
+    start = { x: event.clientX - box.left, y: event.clientY - box.top };
+    panel.classList.add("is-dragging");
+    handle.setPointerCapture(event.pointerId);
+  });
+  handle.addEventListener("pointermove", (event) => {
+    if (!start) return;
+    const maxLeft = Math.max(0, window.innerWidth - 120), maxTop = Math.max(0, window.innerHeight - 60);
+    panel.style.left = `${Math.min(Math.max(0, event.clientX - start.x), maxLeft)}px`;
+    panel.style.top = `${Math.min(Math.max(0, event.clientY - start.y), maxTop)}px`;
+  });
+  const stop = () => { start = null; panel.classList.remove("is-dragging"); };
+  handle.addEventListener("pointerup", stop);
+  handle.addEventListener("pointercancel", stop);
+})();
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !document.querySelector("#pdf-panel").hidden && !document.querySelector("dialog[open]")) closePdfViewer();
+});
 document.addEventListener("click", (event) => {
   const trigger = event.target.closest("[data-view-file]");
   if (!trigger) return;
   event.preventDefault();
   openPdfViewer(trigger.dataset.viewFile, trigger.dataset.viewTitle);
 });
-document.querySelector("#pdf-viewer-close")?.addEventListener("click", () => document.querySelector("#pdf-viewer-dialog")?.close());
-document.querySelector("#pdf-viewer-dialog")?.addEventListener("close", () => { document.querySelector("#pdf-viewer-frame").src = "about:blank"; });
+document.querySelector("#pdf-viewer-close").addEventListener("click", closePdfViewer);
+// If the pop-up the viewer was opened from closes, close the viewer with it.
+document.addEventListener("close", (event) => { if (event.target.tagName === "DIALOG") closePdfViewer(); }, true);
 document.querySelector("#photo-dialog").addEventListener("click", (event) => { if (event.target === event.currentTarget) event.currentTarget.close(); });
