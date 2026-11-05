@@ -436,6 +436,7 @@ h1, h2 { font-family: Manrope, "Segoe UI", sans-serif; }
 .lp-review { --t-fg:var(--lp-blue); --t-bg:var(--lp-blue-bg); --t-line:var(--lp-blue-line); }
 .lp-revision { --t-fg:var(--lp-violet); --t-bg:var(--lp-violet-bg); --t-line:var(--lp-violet-line); }
 .lp-pending { --t-fg:#6f7e91; --t-bg:#fff; --t-line:#e3e8ef; }
+.lp-exempt { --t-fg:#7a8696; --t-bg:#f1f3f6; --t-line:#d5dae2; }
 .lp-sum, .lp-chip { color: var(--t-fg); background: var(--t-bg); border-color: var(--t-line); }
 .lp-chip { display: inline-flex; align-items: center; padding: 3px 9px; border: 1px solid; border-radius: 999px; font-size: 10px; font-weight: 700; white-space: nowrap; }
 .lp-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--t-line); border: 1.5px solid var(--t-fg); }
@@ -490,6 +491,8 @@ h1, h2 { font-family: Manrope, "Segoe UI", sans-serif; }
 .lp-dot.lp-review { background: var(--lp-blue-bg); border-color: var(--lp-blue); }
 .lp-dot.lp-revision { background: var(--lp-violet-bg); border-color: var(--lp-violet); }
 .lp-dot.lp-pending { background: #fff; border-color: #9aa8bb; }
+.lp-dot.lp-exempt { background: repeating-linear-gradient(45deg,#e4e8ee,#e4e8ee 2px,#f6f7f9 2px,#f6f7f9 4px); border-color: #aab3c0; }
+.lp-cal-task.lp-exempt { background: repeating-linear-gradient(45deg,#f1f3f6,#f1f3f6 6px,#f8f9fb 6px,#f8f9fb 12px); border-style: dashed; }
 .lp-cal-hint { margin: 8px 0 0; color: #98a3b0; font-size: 11px; }
 
 /* day pop-up */
@@ -1010,3 +1013,18 @@ body { font-size: 15px; line-height: 1.5; }
 .lp-ov-item > summary small { color: #5b6b86; }
 .lp-ov-item[open] > summary { background: #f6f8fc; border-bottom: 1px solid #eef1f5; border-radius: 10px 10px 0 0; }
 .lp-ov-body { padding: 8px 12px 12px; }
+
+/* ---- Admin settings: days without lesson plans, download all, term reset ---- */
+.exempt-scope { border: 1.5px solid #dbe3ef; border-radius: 12px; padding: 12px 14px; display: grid; gap: 8px; }
+.exempt-scope legend { padding: 0 6px; font-size: 12px; font-weight: 700; color: #4a5b75; }
+.exempt-radio { font-size: 13px; color: #33445f; }
+.exempt-teachers { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 4px 14px; max-height: 220px; overflow: auto; padding: 8px 4px 2px; border-top: 1px dashed #dbe3ef; }
+.exempt-teachers label { display: flex; align-items: center; gap: 7px; font-size: 13px; color: #33445f; }
+.exempt-list { display: grid; gap: 8px; margin-top: 16px; }
+.exempt-item { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; border: 1px solid #e3e8ef; border-radius: 10px; background: #f8f9fb; }
+.exempt-item strong { display: block; font-size: 14px; color: #1d2f4d; }
+.exempt-item small { color: #627189; font-size: 12px; }
+#download-all[aria-disabled="true"] { opacity: .5; pointer-events: none; }
+.danger-panel { border-color: #e9c3c3; }
+.danger-panel .panel-heading h2 { color: #b42318; }
+#download-all { text-decoration: none; }

@@ -9,6 +9,8 @@ import pg from "pg";
 import { canManageContent, canManageRole, rolesVisibleTo } from "./permissions.js";
 import { analyzePdf, contentFlags } from "./pdf-check.js";
 import { fileStore } from "./file-store.js";
+import { storage as fileStorage } from "./storage.js";
+import { createZipWriter, safeSegment, uniquePath } from "./zip.js";
 
 const { Pool } = pg;
 const scrypt = promisify(scryptCallback);
@@ -24,6 +26,9 @@ const LP_TZ = "Asia/Manila";
 const LP_NOW_MANILA_SQL = `(NOW() AT TIME ZONE '${LP_TZ}')`;
 const lpDeadlineSql = (alias) => `(${alias}.due_date + TIME '17:00')`;
 const lpPassedLateSql = (tsExpr, alias) => `((${tsExpr}) AT TIME ZONE '${LP_TZ}' > ${lpDeadlineSql(alias)})`;
+// A day is "not required" when an administrator marked it for every teacher (teacher_id NULL) or for this teacher.
+const lpExemptSql = (alias) => `EXISTS (SELECT 1 FROM lesson_plan_exempt_days e WHERE e.exempt_date=${alias}.due_date AND (e.teacher_id IS NULL OR e.teacher_id=${alias}.teacher_id))`;
+const lpExemptReasonSql = (alias) => `(SELECT e.reason FROM lesson_plan_exempt_days e WHERE e.exempt_date=${alias}.due_date AND (e.teacher_id IS NULL OR e.teacher_id=${alias}.teacher_id) ORDER BY e.teacher_id NULLS FIRST LIMIT 1)`;
 const staticFiles = new Map([
   ["/", ["index.html", "text/html; charset=utf-8"]],
   ["/index.html", ["index.html", "text/html; charset=utf-8"]],
@@ -947,13 +952,197 @@ async function handleLessonPlanRoutes(request, response, url, actor) {
     } catch(e) { await conn.query("ROLLBACK"); throw e; } finally { conn.release(); }
     sendJson(response, 200, {ok:true, termNumber:term, teacherId, subjectNames, generatedOrUpdated:count}); return true;
   }
+  /* ---------- Days when no lesson plan is required (holiday, leave, class suspension...) ---------- */
+  if (url.pathname === "/api/lesson-plans/exempt-days" && request.method === "GET") {
+    requireRole(actor, admin);
+    const result = await pool.query(
+      `SELECT e.batch_id, e.reason, to_char(MIN(e.exempt_date),'YYYY-MM-DD') AS from_date, to_char(MAX(e.exempt_date),'YYYY-MM-DD') AS to_date,
+              COUNT(DISTINCT e.exempt_date)::int AS days, BOOL_OR(e.teacher_id IS NULL) AS all_teachers,
+              COALESCE(ARRAY_AGG(DISTINCT u.display_name) FILTER (WHERE u.id IS NOT NULL), '{}') AS teachers
+       FROM lesson_plan_exempt_days e LEFT JOIN users u ON u.id=e.teacher_id
+       GROUP BY e.batch_id, e.reason ORDER BY MIN(e.exempt_date) DESC, MIN(e.created_at) DESC`);
+    sendJson(response, 200, { batches: result.rows.map((r) => ({ id: r.batch_id, reason: r.reason, from: r.from_date, to: r.to_date, days: r.days, allTeachers: r.all_teachers, teachers: r.teachers })) });
+    return true;
+  }
+  if (url.pathname === "/api/lesson-plans/exempt-days" && request.method === "POST") {
+    ensureSameOrigin(request); requireRole(actor, admin);
+    const body = await parseJson(request);
+    const isoDate = (v) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || "")) && !Number.isNaN(new Date(`${v}T12:00:00Z`).getTime()) ? String(v) : null;
+    const from = isoDate(body.dateFrom), to = isoDate(body.dateTo || body.dateFrom);
+    if (!from || !to) throw new HttpError(400, "Choose a valid date, or a valid start and end date.");
+    if (to < from) throw new HttpError(400, "The end date must not be before the start date.");
+    const dates = [];
+    for (let d = new Date(`${from}T12:00:00Z`); d <= new Date(`${to}T12:00:00Z`); d.setUTCDate(d.getUTCDate() + 1)) {
+      if (dates.length > 366) throw new HttpError(400, "Choose a range of one year or less.");
+      if (![0, 6].includes(d.getUTCDay())) dates.push(d.toISOString().slice(0, 10));
+    }
+    if (!dates.length) throw new HttpError(400, "That range only contains weekend days. Lesson plans are only due Monday to Friday.");
+    const reason = String(body.reason || "").trim().slice(0, 200);
+    if (!reason) throw new HttpError(400, "Choose or type a reason (for example Holiday, Class suspension or On leave).");
+    const everyone = body.teacherIds === "all";
+    let teacherIds = [];
+    if (!everyone) {
+      teacherIds = [...new Set((Array.isArray(body.teacherIds) ? body.teacherIds : []).map(Number))];
+      if (!teacherIds.length || teacherIds.length > 500 || teacherIds.some((n) => !Number.isInteger(n) || n < 1)) throw new HttpError(400, "Choose all teachers or select at least one teacher.");
+      const found = await pool.query("SELECT id FROM users WHERE role='teacher' AND active=TRUE AND id = ANY($1::bigint[])", [teacherIds]);
+      if (found.rowCount !== teacherIds.length) throw new HttpError(400, "One of the selected accounts is not an active teacher.");
+    }
+    const label = from === to ? from : `${from} to ${to}`;
+    const batchId = await inTransaction(async (connection) => {
+      const batch = (await connection.query("SELECT gen_random_uuid() AS id")).rows[0].id;
+      for (const date of dates) {
+        if (everyone) {
+          // An "all teachers" day replaces any single-teacher rows for the same date.
+          await connection.query("DELETE FROM lesson_plan_exempt_days WHERE exempt_date=$1", [date]);
+          await connection.query("INSERT INTO lesson_plan_exempt_days(batch_id,exempt_date,teacher_id,reason,created_by) VALUES($1::uuid,$2::date,NULL,$3::text,$4::bigint)", [batch, date, reason, actor.id]);
+        } else {
+          for (const teacherId of teacherIds) {
+            await connection.query(
+              `INSERT INTO lesson_plan_exempt_days(batch_id,exempt_date,teacher_id,reason,created_by)
+               SELECT $1::uuid,$2::date,$3::bigint,$4::text,$5::bigint WHERE NOT EXISTS (SELECT 1 FROM lesson_plan_exempt_days WHERE exempt_date=$2::date AND teacher_id IS NULL)
+               ON CONFLICT DO NOTHING`, [batch, date, teacherId, reason, actor.id]);
+          }
+        }
+      }
+      const who = everyone
+        ? await connection.query("SELECT id FROM users WHERE role='teacher' AND active=TRUE")
+        : { rows: teacherIds.map((id) => ({ id })) };
+      for (const teacher of who.rows) await notify(connection, teacher.id, "lesson_plan_exempt", "No lesson plan required", `${label}: ${reason}. You do not need to pass a lesson plan for ${dates.length > 1 ? "these days" : "this day"}.`);
+      await audit(connection, actor.id, "lessonplan.exempt_days_added", "lesson_plan_exempt_days", batch);
+      return batch;
+    });
+    sendJson(response, 201, { ok: true, id: batchId, days: dates.length }); return true;
+  }
+  const exemptDelete = url.pathname.match(/^\/api\/lesson-plans\/exempt-days\/([0-9a-f-]{36})$/i);
+  if (exemptDelete && request.method === "DELETE") {
+    ensureSameOrigin(request); requireRole(actor, admin);
+    const removed = await inTransaction(async (connection) => {
+      const result = await connection.query("DELETE FROM lesson_plan_exempt_days WHERE batch_id=$1", [exemptDelete[1]]);
+      if (result.rowCount) await audit(connection, actor.id, "lessonplan.exempt_days_removed", "lesson_plan_exempt_days", exemptDelete[1]);
+      return result.rowCount;
+    });
+    if (!removed) throw new HttpError(404, "Those days were already removed.");
+    sendJson(response, 200, { ok: true }); return true;
+  }
+
+  /* ---------- Settings: bulk download of every lesson plan, and the term reset ---------- */
+  if (url.pathname === "/api/lesson-plans/data-summary" && request.method === "GET") {
+    requireRole(actor, admin);
+    const files = await pool.query(
+      `SELECT t.term_number, COUNT(*)::int AS files, COALESCE(SUM(x.file_size),0)::bigint AS bytes, COUNT(DISTINCT t.teacher_id)::int AS teachers
+       FROM lesson_plan_uploads x JOIN lesson_plan_generated_tasks t ON t.id=x.task_id GROUP BY t.term_number`);
+    const counts = await pool.query(
+      `SELECT (SELECT COUNT(*)::int FROM lesson_plan_generated_tasks) AS tasks,
+              (SELECT COUNT(*)::int FROM lesson_plan_subject_assignments) AS assignments,
+              (SELECT COUNT(*)::int FROM teacher_schedule) AS schedule_entries,
+              (SELECT COUNT(*)::int FROM lesson_plan_exempt_days) AS exempt_days`);
+    const perTerm = { 1: 0, 2: 0, 3: 0 };
+    let totalFiles = 0, bytes = 0;
+    for (const row of files.rows) { perTerm[row.term_number] = row.files; totalFiles += row.files; bytes += Number(row.bytes); }
+    const c = counts.rows[0];
+    sendJson(response, 200, { files: totalFiles, bytes, perTerm, tasks: c.tasks, assignments: c.assignments, scheduleEntries: c.schedule_entries, exemptDays: c.exempt_days });
+    return true;
+  }
+  if (url.pathname === "/api/lesson-plans/download-all" && request.method === "GET") {
+    requireRole(actor, admin);
+    const termParam = url.searchParams.get("term") || "all";
+    const term = termParam === "all" ? null : Number(termParam);
+    if (term !== null && ![1, 2, 3].includes(term)) throw new HttpError(400, "Choose all terms, or Term 1, 2 or 3.");
+    const rows = (await pool.query(
+      `SELECT x.id, x.file_name, x.submitted_at, t.term_number, t.week_number, t.day_number, to_char(t.due_date,'YYYY-MM-DD') AS due,
+              u.id AS teacher_id, u.display_name, u.username, s.name AS subject_name
+       FROM lesson_plan_uploads x JOIN lesson_plan_generated_tasks t ON t.id=x.task_id
+       JOIN users u ON u.id=t.teacher_id JOIN subjects s ON s.id=t.subject_id
+       WHERE ($1::int IS NULL OR t.term_number=$1)
+       ORDER BY u.display_name, u.id, s.name, t.term_number, t.week_number, t.day_number`, [term])).rows;
+    if (!rows.length) throw new HttpError(404, "There are no submitted lesson plans to download yet.");
+    // One folder per teacher, one subfolder per subject. Two teachers with the same name get their username added.
+    const nameCount = new Map();
+    for (const r of rows) { if (!nameCount.has(r.teacher_id)) nameCount.set(r.teacher_id, r.display_name); }
+    const sameName = (name) => [...nameCount.values()].filter((n) => safeSegment(n).toLowerCase() === safeSegment(name).toLowerCase()).length > 1;
+    const stamp = new Intl.DateTimeFormat("en-CA", { timeZone: schoolTimeZone, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+    const zipName = `Lesson-Plans_${term ? `Term-${term}` : "All-Terms"}_${stamp}.zip`;
+    response.writeHead(200, {
+      "Content-Type": "application/zip",
+      "Content-Disposition": `attachment; filename="${zipName}"; filename*=UTF-8''${encodeURIComponent(zipName)}`,
+      "Cache-Control": "private, no-store",
+      "X-Content-Type-Options": "nosniff",
+    });
+    const zip = createZipWriter(response), used = new Set(), skipped = [];
+    try {
+      for (const r of rows) {
+        let data;
+        try {
+          const f = (await pool.query("SELECT file_key,file_data FROM lesson_plan_uploads WHERE id=$1", [r.id])).rows[0];
+          data = await readStoredFile(f?.file_key, f?.file_data);
+        } catch (error) {
+          skipped.push(`${r.display_name} / ${r.subject_name} / Term ${r.term_number} Week ${r.week_number} Day ${r.day_number} (${r.due}): ${error.message}`);
+          continue;
+        }
+        const teacherDir = safeSegment(sameName(r.display_name) ? `${r.display_name} (${r.username})` : r.display_name, "Teacher");
+        const original = safeSegment(r.file_name, "lesson-plan.pdf");
+        const prefix = `T${r.term_number}-W${String(r.week_number).padStart(2, "0")}-D${r.day_number}_${r.due}_`;
+        const entry = uniquePath(`${teacherDir}/${safeSegment(r.subject_name, "Subject")}/${prefix}${original.toLowerCase().endsWith(".pdf") ? original : `${original}.pdf`}`, used);
+        await zip.addFile(entry, data, new Date(r.submitted_at));
+      }
+      if (skipped.length) await zip.addFile("_files-not-included.txt", Buffer.from(`These lesson plans could not be read from storage and are not in this ZIP:\r\n\r\n${skipped.join("\r\n")}\r\n`, "utf8"));
+      await zip.finish();
+      response.end();
+      await pool.query("INSERT INTO audit_logs (actor_id, action, target_type, target_id) VALUES ($1, $2, $3, $4)", [actor.id, "lessonplan.download_all", "lesson_plan_uploads", term ? `term-${term}` : "all"]).catch(() => {});
+    } catch (error) {
+      console.error("Lesson plan ZIP failed:", error.message);
+      response.destroy(error); // a half-written ZIP must not look like a finished download
+    }
+    return true;
+  }
+  if (url.pathname === "/api/lesson-plans/reset-term" && request.method === "POST") {
+    ensureSameOrigin(request); requireRole(actor, admin);
+    const body = await parseJson(request);
+    if (body.confirm !== "RESET") throw new HttpError(400, "Type RESET to confirm the term reset.");
+    const password = typeof body.password === "string" ? body.password : "";
+    if (!password || password.length > 256) throw new HttpError(400, "Enter your password to confirm the term reset.");
+    const me = await pool.query("SELECT password_hash FROM users WHERE id=$1 AND active=TRUE", [actor.id]);
+    if (!me.rowCount || !(await passwordMatches(password, me.rows[0].password_hash))) throw new HttpError(400, "Your password is incorrect.");
+    const summary = await inTransaction(async (connection) => {
+      // Collect stored-file keys first; the rows (and their uploads, revisions and retained dates) cascade away with the tasks.
+      const keys = (await connection.query(
+        `SELECT file_key AS k FROM lesson_plan_uploads WHERE file_key IS NOT NULL
+         UNION SELECT admin_revision_file_key FROM lesson_plan_uploads WHERE admin_revision_file_key IS NOT NULL
+         UNION SELECT file_key FROM lesson_plan_upload_versions WHERE file_key IS NOT NULL
+         UNION SELECT admin_revision_file_key FROM lesson_plan_upload_versions WHERE admin_revision_file_key IS NOT NULL`)).rows.map((r) => r.k);
+      const plans = (await connection.query("SELECT COUNT(*)::int AS n FROM lesson_plan_uploads")).rows[0].n;
+      const tasks = (await connection.query("DELETE FROM lesson_plan_generated_tasks")).rowCount;
+      const assignments = (await connection.query("DELETE FROM lesson_plan_subject_assignments")).rowCount;
+      const exempt = (await connection.query("DELETE FROM lesson_plan_exempt_days")).rowCount;
+      const schedule = (await connection.query("DELETE FROM teacher_schedule")).rowCount;
+      await connection.query("DELETE FROM notifications WHERE kind IN ('lesson_plan_deleted','lesson_plan_exempt')");
+      const teachers = await connection.query("SELECT id FROM users WHERE role='teacher' AND active=TRUE");
+      for (const t of teachers.rows) await notify(connection, t.id, "term_reset", "New term started", "The administrator reset the term. Your class schedule and lesson-plan calendar were cleared. Please enter your new schedule in Settings.");
+      await audit(connection, actor.id, "lessonplan.term_reset", "term", "all");
+      return { keys, plans, tasks, assignments, exempt, schedule };
+    });
+    // Delete the files from storage only after the database change is safely committed. Anything missed is
+    // unreferenced and the storage clean-up removes it later.
+    let filesRemoved = 0, filesFailed = 0;
+    if (fileStore.enabled) {
+      for (let i = 0; i < summary.keys.length; i += 100) {
+        try { await fileStorage.remove(summary.keys.slice(i, i + 100)); filesRemoved += Math.min(100, summary.keys.length - i); }
+        catch (error) { filesFailed += Math.min(100, summary.keys.length - i); console.error("Term reset: storage delete failed:", error.message); }
+      }
+    }
+    sendJson(response, 200, { ok: true, lessonPlans: summary.plans, calendarDays: summary.tasks, subjectAssignments: summary.assignments, scheduleEntries: summary.schedule, exemptDays: summary.exempt, filesRemoved, filesFailed });
+    return true;
+  }
+
   if (url.pathname === "/api/lesson-plans/tasks" && request.method === "GET") {
     const term = Number(url.searchParams.get("term") || 1);
     if (![1,2,3].includes(term)) throw new HttpError(400, "Invalid term.");
     const result = await pool.query(`SELECT t.id,t.term_number,t.week_number,t.day_number,to_char(t.due_date,'YYYY-MM-DD') AS due_date,t.teacher_id,t.subject_id,
       u.display_name AS teacher_name,s.name AS subject_name,x.id AS upload_id,x.file_name,x.file_size,
       CASE WHEN x.id IS NOT NULL THEN (CASE WHEN x.status='Submitted' AND ${lpPassedLateSql('x.submitted_at','t')} THEN 'Late' ELSE x.status END)
+           WHEN ${lpExemptSql('t')} THEN 'Exempt'
            WHEN ${LP_NOW_MANILA_SQL} > ${lpDeadlineSql('t')} THEN 'Overdue' ELSE 'Awaiting Upload' END AS status,
+      ${lpExemptSql('t')} AS exempt, COALESCE(${lpExemptReasonSql('t')},'') AS exempt_reason,
       x.admin_feedback,x.admin_revision_file_name,x.submitted_at,
       COALESCE(x.flag_codes,'') AS flag_codes,COALESCE(x.flag_reason,'') AS flag_reason,COALESCE(x.appeal_note,'') AS appeal_note,
       r.original_submitted_at AS retained_submitted_at,
@@ -990,6 +1179,10 @@ async function handleLessonPlanRoutes(request, response, url, actor) {
     if (!task.rowCount) throw new HttpError(404, "Lesson-plan task not found for your account.");
     const taskRow = task.rows[0];
     const resubmit = body.resubmit === true;
+    const exemptNow = await pool.query(`SELECT ${lpExemptReasonSql('t')} AS reason FROM lesson_plan_generated_tasks t WHERE t.id=$1 AND ${lpExemptSql('t')}`, [taskId]);
+    if (exemptNow.rowCount && !(await pool.query("SELECT 1 FROM lesson_plan_uploads WHERE task_id=$1", [taskId])).rowCount) {
+      throw new HttpError(409, `No lesson plan is required on this day${exemptNow.rows[0].reason ? ` (${exemptNow.rows[0].reason})` : ""}.`);
+    }
     // What may this teacher do with the current submission?
     const assertCanUpload = (currentRow) => {
       if (!currentRow) return;
@@ -1588,6 +1781,14 @@ async function handleScheduleRoutes(request, response, url, actor) {
   return false;
 }
 
+// Attendance is only taken on weekdays (Mon-Fri) from 6:00 AM until 6:00 PM, school time.
+const ATTENDANCE_START_MINUTES = 6 * 60;
+const ATTENDANCE_END_MINUTES = 18 * 60;
+function attendanceWindow(now = schoolNow()) {
+  const open = now.weekday <= 5 && now.minutes >= ATTENDANCE_START_MINUTES && now.minutes < ATTENDANCE_END_MINUTES;
+  return { open, start: "06:00", end: "18:00", weekdaysOnly: true };
+}
+
 async function handleAttendanceRoutes(request, response, url, actor) {
   if (!url.pathname.startsWith("/api/attendance")) return false;
 
@@ -1598,11 +1799,12 @@ async function handleAttendanceRoutes(request, response, url, actor) {
       `SELECT status, leave_type, details, logged_at, auto_recorded FROM attendance_records WHERE teacher_id = $1 AND attendance_date = $2`,
       [actor.id, now.date]);
     const record = result.rows[0] ?? null;
+    const window = attendanceWindow(now);
     sendJson(response, 200, {
-      date: now.date, time: now.time, leaveTypes: LEAVE_TYPES,
+      date: now.date, time: now.time, leaveTypes: LEAVE_TYPES, window,
       record: record && { status: record.status, leaveType: record.leave_type, details: record.details, loggedAt: record.logged_at, auto: record.auto_recorded },
-      // No record for today (school date) means the pop-up is required; this resets at midnight.
-      needsPrompt: !record,
+      // The pop-up is required only on weekdays between 6:00 AM and 6:00 PM, and only until today's record exists.
+      needsPrompt: !record && window.open,
     });
     return true;
   }
@@ -1610,6 +1812,7 @@ async function handleAttendanceRoutes(request, response, url, actor) {
   if (url.pathname === "/api/attendance/me" && request.method === "POST") {
     ensureSameOrigin(request); requireRole(actor, ["teacher"]);
     const body = await parseJson(request);
+    if (!attendanceWindow().open) throw new HttpError(409, "Attendance is recorded on weekdays (Monday to Friday) from 6:00 AM to 6:00 PM.");
     const status = String(body.status || "");
     if (!["present", "leave", "travel"].includes(status)) throw new HttpError(400, "Choose Present, On Leave or On Travel.");
     let leaveType = "", details = String(body.details || "").trim().slice(0, 300);
@@ -1677,7 +1880,7 @@ async function handleAttendanceRoutes(request, response, url, actor) {
         schedule, current,
       };
     });
-    sendJson(response, 200, { date: requested, today: now.date, time: now.time, weekday, isToday, teachers: out });
+    sendJson(response, 200, { date: requested, today: now.date, time: now.time, weekday, isToday, window: attendanceWindow(now), teachers: out });
     return true;
   }
   return false;

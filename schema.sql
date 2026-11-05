@@ -383,3 +383,17 @@ ALTER TABLE announcement_images ALTER COLUMN file_data DROP NOT NULL;
 ALTER TABLE ancillary_attachments ALTER COLUMN file_data DROP NOT NULL;
 ALTER TABLE ancillary_submissions ALTER COLUMN file_data DROP NOT NULL;
 ALTER TABLE task_attachments ALTER COLUMN file_data DROP NOT NULL;
+
+-- Days on which no lesson plan has to be passed (holiday, leave, class suspension...).
+-- teacher_id NULL means the day applies to every teacher. Rows created together share a batch_id.
+CREATE TABLE IF NOT EXISTS lesson_plan_exempt_days (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  batch_id UUID NOT NULL DEFAULT gen_random_uuid(),
+  exempt_date DATE NOT NULL,
+  teacher_id BIGINT REFERENCES users(id) ON DELETE CASCADE,
+  reason TEXT NOT NULL DEFAULT '',
+  created_by BIGINT REFERENCES users(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS lp_exempt_unique ON lesson_plan_exempt_days (exempt_date, COALESCE(teacher_id, 0));
+CREATE INDEX IF NOT EXISTS lp_exempt_batch_idx ON lesson_plan_exempt_days (batch_id);

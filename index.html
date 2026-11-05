@@ -292,7 +292,7 @@
           </section>
 
           <section class="portal-view" id="view-attendance" hidden>
-            <div class="section-heading"><div><h2>Attendance</h2><p>Who is in school today. Select a teacher for details.</p></div></div>
+            <div class="section-heading"><div><h2>Attendance</h2><p>Who is in school today. Attendance is recorded on weekdays from 6:00 AM to 6:00 PM. Select a teacher for details.</p></div></div>
             <section class="panel attendance-me" id="attendance-me" hidden></section>
             <section class="panel term-filter-panel attendance-bar">
               <label class="login-field" for="attendance-date">Date<input id="attendance-date" type="date" /></label>
@@ -304,7 +304,7 @@
           </section>
 
           <section class="portal-view" id="view-settings" hidden>
-            <div class="section-heading"><div><h2>Settings</h2><p>Your profile, sign-in details and class schedule.</p></div></div>
+            <div class="section-heading"><div><h2>Settings</h2><p>Your profile, sign-in details and school tools.</p></div></div>
             <section class="panel security-panel">
               <div class="panel-heading"><div><h2>Profile</h2><p>Your name and contact details. Email and phone number are optional.</p></div></div>
               <form id="profile-form" class="portal-form">
@@ -324,6 +324,55 @@
               <div id="settings-schedule-form-host"></div>
               <div id="settings-schedule-list" class="schedule-entry-list"></div>
             </section>
+            <div id="settings-admin" hidden>
+              <section class="panel security-panel" id="settings-exempt-panel">
+                <div class="panel-heading"><div><h2>Days without lesson plans</h2><p>Mark days when teachers do not need to pass a lesson plan, such as a holiday, leave or a class suspension. Those days are not counted as overdue.</p></div></div>
+                <form id="exempt-form" class="portal-form">
+                  <div class="form-row">
+                    <label class="login-field" for="exempt-from">From<input id="exempt-from" type="date" required /></label>
+                    <label class="login-field" for="exempt-to">Until (leave empty for one day)<input id="exempt-to" type="date" /></label>
+                  </div>
+                  <div class="form-row">
+                    <label class="login-field" for="exempt-reason-kind">Reason
+                      <select id="exempt-reason-kind"><option>Holiday</option><option>Class suspension</option><option>Teacher on leave</option><option>School activity</option><option value="__other">Other…</option></select>
+                    </label>
+                    <label class="login-field" id="exempt-reason-other-wrap" for="exempt-reason-other" hidden>Describe the reason<input id="exempt-reason-other" maxlength="200" /></label>
+                  </div>
+                  <fieldset class="exempt-scope">
+                    <legend>Applies to</legend>
+                    <label class="checkbox-field exempt-radio"><input type="radio" name="exempt-scope" value="all" checked /> All teachers</label>
+                    <label class="checkbox-field exempt-radio"><input type="radio" name="exempt-scope" value="some" /> Specific teachers</label>
+                    <div id="exempt-teachers" class="exempt-teachers" hidden></div>
+                  </fieldset>
+                  <p id="exempt-error" class="form-error" role="alert" hidden></p>
+                  <div class="form-actions"><span class="form-hint">Saturdays and Sundays are skipped automatically. Teachers receive a notice.</span><button class="button button-primary" type="submit">Save days off</button></div>
+                </form>
+                <div id="exempt-list" class="exempt-list"></div>
+              </section>
+
+              <section class="panel security-panel" id="settings-download-panel">
+                <div class="panel-heading"><div><h2>Download all lesson plans</h2><p>One ZIP file with every submitted lesson plan. Each teacher gets a folder, and each subject a subfolder inside it.</p></div></div>
+                <div class="portal-form">
+                  <label class="login-field" for="download-term">Which term?<select id="download-term"><option value="all">All terms</option><option value="1">Term 1</option><option value="2">Term 2</option><option value="3">Term 3</option></select></label>
+                  <p id="download-info" class="form-hint">Checking…</p>
+                  <div class="form-actions"><span class="form-hint">The file name is Lesson-Plans_…zip. Large archives can take a minute to start.</span><a class="button button-primary" id="download-all" href="#" download aria-disabled="true">Download ZIP</a></div>
+                </div>
+              </section>
+
+              <section class="panel security-panel danger-panel" id="settings-reset-panel">
+                <div class="panel-heading"><div><h2>Term reset</h2><p>Start a new term with a clean database. This permanently deletes every teacher’s class schedule, the lesson-plan calendars, all uploaded lesson plans and their revisions, and the days-off list. Accounts, announcements, memos and attendance records are kept.</p></div></div>
+                <form id="reset-form" class="portal-form">
+                  <p id="reset-summary" class="form-hint"></p>
+                  <p class="lp-note">Download the lesson plans first. This cannot be undone.</p>
+                  <div class="form-row">
+                    <label class="login-field" for="reset-confirm">Type RESET to confirm<input id="reset-confirm" autocomplete="off" required /></label>
+                    <label class="login-field" for="reset-password">Your password<input id="reset-password" type="password" autocomplete="current-password" required maxlength="256" /></label>
+                  </div>
+                  <p id="reset-error" class="form-error" role="alert" hidden></p>
+                  <div class="form-actions"><span class="form-hint">Teachers receive a “New term started” notice.</span><button class="button button-danger" id="reset-submit" type="submit" disabled>Reset term</button></div>
+                </form>
+              </section>
+            </div>
             <section class="panel security-panel">
               <div class="panel-heading"><div><h2>Change password</h2><p>Use a unique password that is at least 12 characters long.</p></div></div>
               <form id="password-form" class="portal-form">
@@ -410,7 +459,7 @@
     <dialog id="attendance-dialog" class="lp-dialog attendance-dialog" aria-labelledby="attendance-title">
       <div class="lp-dialog-head"><div><small id="attendance-kicker">Good morning</small><h3 id="attendance-title">Record your attendance</h3></div></div>
       <form id="attendance-form" class="lp-dialog-body">
-        <p class="lp-note" id="attendance-intro">You signed in after 7:29 AM. Tell us where you are today.</p>
+        <p class="lp-note" id="attendance-intro">Tell us where you are today.</p>
         <div class="att-choices" role="radiogroup" aria-label="Attendance status">
           <button type="button" class="att-choice att-choice-present" data-att-choice="present" role="radio" aria-checked="false"><i class="att-dot att-present"></i><strong>Present</strong><small>I am in school</small></button>
           <button type="button" class="att-choice att-choice-leave" data-att-choice="leave" role="radio" aria-checked="false"><i class="att-dot att-leave"></i><strong>On leave</strong><small>I am on leave today</small></button>

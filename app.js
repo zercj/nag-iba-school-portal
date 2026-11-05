@@ -11,7 +11,7 @@ const viewTitles = {
   announcements: ["Announcements", "School and classroom updates."],
   "lesson-plans": ["Lesson Plans", "Schedule, submit and review daily lesson plans."],
   ancillary: ["Ancillary Tasks", "Manually assigned tasks and document submissions."],
-  settings: ["Settings", "Your profile, sign-in details and class schedule."],
+  settings: ["Settings", "Your profile, sign-in details and school tools."],
 };
 
 // New tabs register themselves from features.js: registerView(name, [title, subtitle], { allowed, onEnter }).
@@ -295,6 +295,7 @@ const LP_WEEKDAYS=["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
 function lpInfo(t){
   const s=String(t.status||"").toLowerCase();
   const late=!!t.submitted_late;
+  if(s==="exempt" && !t.upload_id) return {tone:"exempt",label:"Not required",short:"Not required"};
   if(!t.upload_id && t.retained_submitted_at) return {tone:"revision",label:"Re-upload requested",short:"Re-upload"};
   if(s==="overdue") return {tone:"overdue",label:"Overdue",short:"Overdue"};
   if(s==="completed") return late?{tone:"done-late",label:"Completed late",short:"Done late"}:{tone:"done",label:"Completed on time",short:"Done"};
@@ -305,6 +306,8 @@ function lpInfo(t){
   return {tone:"pending",label:"Awaiting upload",short:"To do"};
 }
 const lpDay=t=>String(t.due_date).slice(0,10);
+// A day the administrator marked as "no lesson plan needed" (holiday, leave, class suspension) does not count as required work.
+const lpRequired=t=>!(t.exempt && !t.upload_id);
 // Yellow warning triangle: shown to admins while a flagged upload (blank, not a lesson plan, or duplicate) is not yet approved.
 const LP_TRI='<svg class="lp-tri" viewBox="0 0 24 24" role="img" aria-label="Warning"><path class="lp-tri-body" d="M12 2.6 1.9 20.4h20.2z"/><path class="lp-tri-mark" d="M12 9.2v5.3M12 17.3v.2"/></svg>';
 const lpFlagged=t=>!!t.upload_id && !!t.flag_codes && !["approved","completed"].includes(String(t.status||"").toLowerCase());
@@ -432,11 +435,12 @@ function lpCalendarMarkup(scope, tasks){
   }
   const counts={}; tasks.forEach(t=>{const k=lpInfo(t).tone; counts[k]=(counts[k]||0)+1;});
   const done=(counts.done||0)+(counts["done-late"]||0);
-  const pct=tasks.length?Math.round(done/tasks.length*100):0;
-  const legend=[["overdue","Overdue"],["done","Completed on time"],["done-late","Completed late"],["review","In review"],["revision","For revision"],["pending","Awaiting upload"]].map(([k,l])=>`<span class="lp-legend-item"><i class="lp-dot lp-${k}"></i>${l}${counts[k]?` <b>${counts[k]}</b>`:""}</span>`).join("");
+  const requiredCount=tasks.filter(lpRequired).length;
+  const pct=requiredCount?Math.round(done/requiredCount*100):0;
+  const legend=[["overdue","Overdue"],["done","Completed on time"],["done-late","Completed late"],["review","In review"],["revision","For revision"],["pending","Awaiting upload"],["exempt","Not required"]].map(([k,l])=>`<span class="lp-legend-item"><i class="lp-dot lp-${k}"></i>${l}${counts[k]?` <b>${counts[k]}</b>`:""}</span>`).join("");
   return `<div class="lp-cal">
     <div class="lp-cal-bar"><div class="lp-cal-nav"><button type="button" class="lp-nav-btn" data-lp-cal-nav="-1" data-lp-scope="${scope}" aria-label="Previous month" ${state.month<=first?"disabled":""}>&#8249;</button><h3>${LP_MONTHS[m-1]} ${y}</h3><button type="button" class="lp-nav-btn" data-lp-cal-nav="1" data-lp-scope="${scope}" aria-label="Next month" ${state.month>=last?"disabled":""}>&#8250;</button></div>
-    <div class="lp-cal-progress" title="${done} of ${tasks.length} completed"><span>${done}/${tasks.length} completed</span><div class="lp-bar"><i style="width:${pct}%"></i></div></div></div>
+    <div class="lp-cal-progress" title="${done} of ${requiredCount} completed"><span>${done}/${requiredCount} completed</span><div class="lp-bar"><i style="width:${pct}%"></i></div></div></div>
     <div class="lp-cal-grid">${cells}</div>
     <div class="lp-legend">${legend}</div>
     <p class="lp-cal-hint">Select a highlighted day to open that day's lesson plan.</p></div>`;
@@ -524,6 +528,10 @@ function lpTaskControls(t, admin){
   const pdfLink=submitted?`<div class="lp-pdf-row"><button type="button" class="button button-primary lp-view-pdf" data-view-file="/api/lesson-plans/uploads/${t.upload_id}/file" data-view-title="${escapeHtml(t.file_name)}">View lesson plan</button><a class="action-link" href="/api/lesson-plans/uploads/${t.upload_id}/file?download=1">Download</a><small class="lp-pdf-name">${escapeHtml(t.file_name)}</small></div>`:"";
   const flagBanner=lpFlagged(t)?`<div class="lp-flag-banner" role="note">${LP_TRI}<div><strong>${admin?"Needs a closer look":"Submitted with a warning"}</strong><p>${escapeHtml(t.flag_reason||"This upload was flagged.")}</p>${t.appeal_note?`<p><em>${admin?"Teacher's note":"Your note"}:</em> ${escapeHtml(t.appeal_note)}</p>`:""}<small>${admin?"The warning clears when you approve this lesson plan.":"The warning clears once the administrator approves it."}</small></div></div>`:"";
   const retained=(!submitted&&t.retained_submitted_at)?`<p class="lp-note">${admin?"Submission deleted. The teacher keeps the original passing date":"An administrator removed your earlier submission. Your original passing date"} (${escapeHtml(formatDate(t.retained_submitted_at))}) ${admin?"and must upload again.":"is kept. Please upload again."}</p>`:"";
+  if(!submitted && t.exempt){
+    const why=t.exempt_reason?` (${escapeHtml(t.exempt_reason)})`:"";
+    return `<p class="lp-note">${admin?"No lesson plan is required from this teacher on this day":"You do not need to pass a lesson plan on this day"}${why}.</p>`;
+  }
   if(admin){
     if(!submitted) return `${retained||`<p class="lp-note">${state==="overdue"?"This lesson plan is overdue. The teacher has not uploaded it yet.":"Waiting for the teacher to upload."}</p>`}`;
     const review=["submitted","late"].includes(state)
@@ -576,10 +584,11 @@ function renderLessonPlanDashboard() {
   const statsHost=document.querySelector("#lp-dashboard-stats");
   if(!statsHost) return;
   const term=lpTerm();
-  const total=lessonPlanTasks.length;
+  const requiredTasks=lessonPlanTasks.filter(lpRequired);
+  const total=requiredTasks.length;
   const submitted=lessonPlanTasks.filter(t=>!!t.upload_id).length;
   const approved=lessonPlanTasks.filter(t=>["approved","completed"].includes(String(t.status||"").toLowerCase())).length;
-  const pending=lessonPlanTasks.filter(t=>!t.upload_id).length;
+  const pending=requiredTasks.filter(t=>!t.upload_id).length;
   const tones={overdue:0,done:0,"done-late":0};
   lessonPlanTasks.forEach(t=>{const k=lpInfo(t).tone; if(k in tones) tones[k]++;});
   // One compact line instead of a wall of cards.
@@ -594,7 +603,7 @@ function renderLessonPlanDashboard() {
   if(!admin) return;
   const group=(key)=>{
     const map=new Map();
-    lessonPlanTasks.forEach(t=>{
+    lessonPlanTasks.filter(lpRequired).forEach(t=>{
       const name=t[key]||"Unassigned";
       if(!map.has(name)) map.set(name,{name,teachers:new Set(),subjects:new Set(),total:0,submitted:0,approved:0,overdue:0});
       const g=map.get(name); g.total++; if(t.teacher_name)g.teachers.add(t.teacher_name); if(t.subject_name)g.subjects.add(t.subject_name); if(t.upload_id)g.submitted++; if(["approved","completed"].includes(String(t.status||"").toLowerCase()))g.approved++; if(lpInfo(t).tone==="overdue")g.overdue++;
@@ -621,7 +630,7 @@ function renderLpAssignments(teachers){
   if(!term){ host.innerHTML=""; return; }
   document.querySelector("#lp-assignments-heading").textContent=`Teachers and subjects · Term ${term}`;
   const stats=new Map();
-  lessonPlanTasks.forEach(t=>{const k=`${t.teacher_id}|${t.subject_id}`; const g=stats.get(k)||{total:0,submitted:0}; g.total++; if(t.upload_id)g.submitted++; stats.set(k,g);});
+  lessonPlanTasks.forEach(t=>{const k=`${t.teacher_id}|${t.subject_id}`; const g=stats.get(k)||{total:0,submitted:0}; if(lpRequired(t))g.total++; if(t.upload_id)g.submitted++; stats.set(k,g);});
   const scheduled=lessonPlanAssignments.filter(a=>stats.has(`${a.teacher_id}|${a.subject_id}`));
   if(!scheduled.length){ host.innerHTML=emptyFeed(`No teachers or subjects are scheduled for Term ${term} yet. Use the Schedule tab to add them.`); return; }
   const reviewBySubject=new Map();
@@ -1199,7 +1208,7 @@ async function refreshSummary() {
 }
 function renderSummary() {
   document.querySelectorAll("[data-summary-term]").forEach(b => b.classList.toggle("is-active", b.dataset.summaryTerm === summaryTerm));
-  const tasks = summaryTasks.filter(t => summaryTerm === "all" || String(t.term_number) === summaryTerm);
+  const tasks = summaryTasks.filter(t => (summaryTerm === "all" || String(t.term_number) === summaryTerm) && lpRequired(t));
   const tally = list => {
     const r = { total: list.length, submitted: 0, approved: 0, revision: 0, overdue: 0, waiting: 0 };
     list.forEach(t => {

@@ -230,8 +230,106 @@ registerView("settings", viewTitles.settings, {
     fillProfileForm();
     const teacher = currentUser.role === "teacher";
     $("#settings-schedule-panel").hidden = !teacher;
+    $("#settings-admin").hidden = !isAdminUser();
     if (teacher) { try { await settingsEditor.load(); } catch (e) { setGlobalError(e.message); } }
+    if (isAdminUser()) loadAdminSettings();
   },
+});
+
+/* ====================== Settings (administrators): days without lesson plans, download all, term reset ====================== */
+const prettyDate = (iso) => lpDateLabel(iso, { month: "short", day: "numeric", year: "numeric" });
+async function loadAdminSettings() {
+  try { await Promise.all([loadExemptDays(), loadDataSummary(), loadExemptTeachers()]); } catch (e) { setGlobalError(e.message); }
+}
+
+async function loadExemptTeachers() {
+  const { users } = await api("/api/directory");
+  const teachers = users.filter((u) => u.role === "teacher");
+  const checked = new Set([...document.querySelectorAll("#exempt-teachers input:checked")].map((i) => i.value));
+  $("#exempt-teachers").innerHTML = teachers.length
+    ? teachers.map((t) => `<label><input type="checkbox" value="${escapeHtml(t.id)}"${checked.has(String(t.id)) ? " checked" : ""} /> ${escapeHtml(t.displayName)}</label>`).join("")
+    : "<small>There are no active teacher accounts yet.</small>";
+}
+
+async function loadExemptDays() {
+  const { batches } = await api("/api/lesson-plans/exempt-days");
+  $("#exempt-list").innerHTML = batches.length ? batches.map((b) => {
+    const when = b.from === b.to ? prettyDate(b.from) : `${prettyDate(b.from)} – ${prettyDate(b.to)}`;
+    const who = b.allTeachers ? "All teachers" : (b.teachers.length > 3 ? `${b.teachers.slice(0, 3).join(", ")} +${b.teachers.length - 3} more` : b.teachers.join(", "));
+    return `<div class="exempt-item"><div><strong>${escapeHtml(when)} · ${escapeHtml(b.reason)}</strong><small>${escapeHtml(who)} · ${b.days} school day${b.days === 1 ? "" : "s"}</small></div><button type="button" class="button button-danger-outline" data-exempt-remove="${escapeHtml(b.id)}">Remove</button></div>`;
+  }).join("") : '<p class="form-hint">No days off have been set. Every instruction day currently requires a lesson plan.</p>';
+}
+
+document.querySelectorAll("#exempt-form [name=exempt-scope]").forEach((r) => r.addEventListener("change", () => { $("#exempt-teachers").hidden = $("#exempt-form [name=exempt-scope]:checked").value !== "some"; }));
+$("#exempt-reason-kind").addEventListener("change", (e) => { const other = e.target.value === "__other"; $("#exempt-reason-other-wrap").hidden = !other; $("#exempt-reason-other").required = other; });
+$("#exempt-from").addEventListener("change", () => { const to = $("#exempt-to"); if (to.value && to.value < $("#exempt-from").value) to.value = ""; to.min = $("#exempt-from").value; });
+$("#exempt-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget; // event.currentTarget is cleared after the first await
+  const error = $("#exempt-error"); error.hidden = true;
+  const kind = $("#exempt-reason-kind").value;
+  const everyone = $("#exempt-form [name=exempt-scope]:checked").value === "all";
+  const body = {
+    dateFrom: $("#exempt-from").value, dateTo: $("#exempt-to").value || $("#exempt-from").value,
+    reason: kind === "__other" ? $("#exempt-reason-other").value : kind,
+    teacherIds: everyone ? "all" : [...document.querySelectorAll("#exempt-teachers input:checked")].map((i) => i.value),
+  };
+  try {
+    const result = await api("/api/lesson-plans/exempt-days", { method: "POST", body });
+    form.reset(); $("#exempt-teachers").hidden = true; $("#exempt-reason-other-wrap").hidden = true;
+    await loadExemptDays();
+    if (typeof refreshLessonPlans === "function") refreshLessonPlans().catch(() => {});
+    showToast(`Saved ${result.days} day${result.days === 1 ? "" : "s"} without lesson plans.`);
+  } catch (requestError) { error.textContent = requestError.message; error.hidden = false; }
+});
+$("#exempt-list").addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-exempt-remove]"); if (!button) return;
+  if (!confirm("Remove these days off? Teachers will need to pass lesson plans on those days again.")) return;
+  try {
+    await api(`/api/lesson-plans/exempt-days/${encodeURIComponent(button.dataset.exemptRemove)}`, { method: "DELETE" });
+    await loadExemptDays();
+    if (typeof refreshLessonPlans === "function") refreshLessonPlans().catch(() => {});
+    showToast("Days off removed.");
+  } catch (e) { setGlobalError(e.message); }
+});
+
+let dataSummary = null;
+function updateDownloadLink() {
+  const term = $("#download-term").value, link = $("#download-all");
+  const files = dataSummary ? (term === "all" ? dataSummary.files : dataSummary.perTerm[term] || 0) : 0;
+  const ready = files > 0;
+  link.href = ready ? `/api/lesson-plans/download-all?term=${encodeURIComponent(term)}` : "#";
+  link.setAttribute("aria-disabled", String(!ready));
+  $("#download-info").textContent = !dataSummary ? "Checking…" : ready
+    ? `${files} lesson plan${files === 1 ? "" : "s"}${term === "all" ? ` (${fmtBytes(dataSummary.bytes)})` : ""} ready to download.`
+    : "There are no submitted lesson plans for this selection yet.";
+}
+async function loadDataSummary() {
+  dataSummary = await api("/api/lesson-plans/data-summary");
+  updateDownloadLink();
+  const d = dataSummary;
+  $("#reset-summary").textContent = `Right now: ${d.scheduleEntries} class schedule entr${d.scheduleEntries === 1 ? "y" : "ies"}, ${d.tasks} lesson-plan calendar day${d.tasks === 1 ? "" : "s"}, ${d.files} uploaded lesson plan${d.files === 1 ? "" : "s"} and ${d.exemptDays} day${d.exemptDays === 1 ? "" : "s"} off would be deleted.`;
+}
+$("#download-term").addEventListener("change", updateDownloadLink);
+$("#download-all").addEventListener("click", (event) => { if ($("#download-all").getAttribute("aria-disabled") === "true") event.preventDefault(); });
+
+function syncResetButton() { $("#reset-submit").disabled = $("#reset-confirm").value.trim() !== "RESET" || !$("#reset-password").value; }
+$("#reset-confirm").addEventListener("input", syncResetButton);
+$("#reset-password").addEventListener("input", syncResetButton);
+$("#reset-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const error = $("#reset-error"); error.hidden = true;
+  if (!confirm("Reset the term now? All class schedules, lesson-plan calendars and uploaded lesson plans will be permanently deleted.")) return;
+  const button = $("#reset-submit"); button.disabled = true;
+  try {
+    const r = await api("/api/lesson-plans/reset-term", { method: "POST", body: { confirm: $("#reset-confirm").value.trim(), password: $("#reset-password").value } });
+    form.reset();
+    showToast(`Term reset. Removed ${r.lessonPlans} lesson plan${r.lessonPlans === 1 ? "" : "s"} and ${r.scheduleEntries} schedule entr${r.scheduleEntries === 1 ? "y" : "ies"}.${r.filesFailed ? ` ${r.filesFailed} stored file(s) could not be deleted yet and will be cleaned up later.` : ""}`);
+    await Promise.all([loadDataSummary(), loadExemptDays()]);
+    if (typeof refreshLessonPlans === "function") refreshLessonPlans().catch(() => {});
+  } catch (requestError) { error.textContent = requestError.message; error.hidden = false; }
+  syncResetButton();
 });
 
 /* ====================== Announcements: "New announcement" pop-up ====================== */
@@ -366,7 +464,7 @@ function openAttendanceDialog({ required }) {
   const hour = new Date().getHours();
   $("#attendance-kicker").textContent = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
   $("#attendance-title").textContent = required ? "Record your attendance" : "Update today's attendance";
-  $("#attendance-intro").textContent = required ? "Tell us where you are today. You need to record your attendance before you can use the portal." : "Change what you reported for today.";
+  $("#attendance-intro").textContent = (required ? "Tell us where you are today. You need to record your attendance before you can use the portal." : "Change what you reported for today.") + " Attendance is open on weekdays from 6:00 AM to 6:00 PM.";
   $("#attendance-cancel").hidden = required;
   dialog.dataset.required = required ? "1" : "";
   $("#attendance-leave-type").innerHTML = '<option value="">Choose the type of leave</option>' + (attendanceMe?.leaveTypes || []).map((t) => `<option${attendanceMe?.record?.leaveType === t ? " selected" : ""}>${escapeHtml(t)}</option>`).join("");
@@ -404,9 +502,11 @@ $("#attendance-form").addEventListener("submit", async (event) => {
 async function checkAttendancePrompt() {
   if (!currentUser || currentUser.role !== "teacher") return;
   const dialog = $("#attendance-dialog");
-  if (dialog.open && dialog.dataset.required) return;
   try { await loadAttendanceMe(); } catch (_) { return; }
-  if (attendanceMe?.needsPrompt) openAttendanceDialog({ required: true });
+  const showing = dialog.open && dialog.dataset.required;
+  if (attendanceMe?.needsPrompt) { if (!showing) openAttendanceDialog({ required: true }); }
+  // Attendance closes at 6:00 PM: a pop-up that is still open must not trap the teacher after that.
+  else if (showing) { dialog.dataset.required = ""; dialog.close(); }
 }
 portalHooks.onLogin.push(async (user) => {
   if (user.role !== "teacher") return;
@@ -438,9 +538,11 @@ function renderAttendance() {
   $("#attendance-totals").innerHTML = [["Present", tally.present, "green"], ["On leave", tally.leave, "red"], ["On travel", tally.travel, "blue"], ["No record", tally.none, "amber"]]
     .map(([label, value, tone]) => `<div class="stat-card overview-stat" data-tone="${tone}"><span class="stat-label"><i class="stat-marker"></i>${label}</span><span class="stat-value">${value}</span></div>`).join("");
   const entries = data.teachers.map((t) => ({ ...t, group: lpTeacherGroup(t.id, t.name) }));
-  $("#attendance-list").innerHTML = data.teachers.length
+  const note = data.weekday > 5 ? "No attendance is taken on weekends."
+    : data.isToday && data.window && !data.window.open ? "Attendance is closed right now. It is open on weekdays from 6:00 AM to 6:00 PM." : "";
+  $("#attendance-list").innerHTML = (note ? `<p class="lp-note">${note}</p>` : "") + (data.teachers.length
     ? lpGroupedMarkup(entries, (t) => `<button type="button" class="att-card att-card-${t.record?.status || "none"}" data-att-teacher="${escapeHtml(t.id)}"><i class="att-dot att-${t.record?.status || "none"}"></i><span class="att-card-main"><strong>${escapeHtml(t.name)}</strong><small>${escapeHtml(attendanceRemark(t))}</small></span></button>`)
-    : emptyFeed("There are no active teacher accounts yet.");
+    : emptyFeed("There are no active teacher accounts yet."));
   // Group cards sit side by side: wrap each group's cards in a grid.
   $("#attendance-list").querySelectorAll(".teacher-group").forEach((g) => {
     const cards = [...g.querySelectorAll(":scope > .att-card")];
@@ -452,8 +554,9 @@ function renderAttendanceMe() {
   const host = $("#attendance-me");
   if (currentUser.role !== "teacher" || !attendanceMe || !attendanceData?.isToday) { host.hidden = true; return; }
   const r = attendanceMe.record;
+  const open = attendanceMe.window?.open !== false;
   host.hidden = false;
-  host.innerHTML = `<div class="att-me"><i class="att-dot att-${r?.status || "none"}"></i><div><strong>Your status today: ${r ? STATUS_LABEL[r.status] : "not recorded yet"}</strong><small>${r ? escapeHtml([r.leaveType, r.details].filter(Boolean).join(" · ") || "") : "Choose a status so the school knows where you are."}</small></div><button type="button" class="button button-secondary" id="attendance-update">${r ? "Update" : "Record now"}</button></div>`;
+  host.innerHTML = `<div class="att-me"><i class="att-dot att-${r?.status || "none"}"></i><div><strong>Your status today: ${r ? STATUS_LABEL[r.status] : "not recorded yet"}</strong><small>${r ? escapeHtml([r.leaveType, r.details].filter(Boolean).join(" · ") || "") : open ? "Choose a status so the school knows where you are." : "Attendance is recorded on weekdays from 6:00 AM to 6:00 PM."}</small></div><button type="button" class="button button-secondary" id="attendance-update"${open ? "" : " disabled"}>${r ? "Update" : "Record now"}</button></div>`;
 }
 
 async function loadAttendance() {
