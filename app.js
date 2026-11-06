@@ -694,6 +694,8 @@ async function refreshLessonPlans() {
     teacherSelect.innerHTML='<option value="">Choose a teacher</option>'+teachers.map(u=>`<option value="${u.id}">${escapeHtml(u.displayName)}</option>`).join("");
     if(prior && teachers.some(u=>String(u.id)===String(prior))) teacherSelect.value=prior;
     teacherSelect.disabled=teachers.length===0;
+    const copyTeacher=document.querySelector("#lp-copy-teacher");
+    if(copyTeacher){ const keep=copyTeacher.value; copyTeacher.innerHTML='<option value="">All teachers</option>'+teachers.map(u=>`<option value="${u.id}">${escapeHtml(u.displayName)}</option>`).join(""); if(keep && teachers.some(u=>String(u.id)===keep)) copyTeacher.value=keep; }
     document.querySelector("#lp-start-date").value ||= new Date().toISOString().slice(0,10);
     renderLpAssignments(teachers);
     const termSelected=!!term;
@@ -1039,6 +1041,20 @@ document.querySelector("#lp-generate-form").addEventListener("submit", async (ev
   } catch(e){setGlobalError(e.message);} finally { submit.disabled=false; }
 });
 
+document.querySelector("#lp-copy-form").addEventListener("submit",async(event)=>{
+  event.preventDefault();
+  const form=event.currentTarget, submit=form.querySelector("button[type=submit]");
+  const fromTerm=Number(document.querySelector("#lp-copy-from").value), toTerm=Number(document.querySelector("#lp-copy-to").value);
+  if(fromTerm===toTerm){ setGlobalError("Choose two different terms to copy between."); return; }
+  setGlobalError(); submit.disabled=true;
+  try {
+    const result=await api("/api/lesson-plans/copy-term",{method:"POST",body:{fromTerm,toTerm,startDate:document.querySelector("#lp-copy-start").value,teacherId:document.querySelector("#lp-copy-teacher").value||null}});
+    document.querySelector("#lp-view-term").value=String(toTerm);
+    lpCal.admin.key=""; lpCal.teacher.key=""; setLpTab("overview");
+    await refreshLessonPlans(); await refreshLpNotifications();
+    showToast(`Term ${toTerm}: copied ${result.copied} subject schedule${result.copied===1?"":"s"} (${result.days} days) from Term ${fromTerm}${result.skipped?`; ${result.skipped} already existed and were kept`:""}.`);
+  } catch(e){ setGlobalError(e.message); } finally { submit.disabled=false; }
+});
 document.querySelector("#lp-assign-search").addEventListener("input",(e)=>{lpAssignQuery=e.target.value;renderLpAssignments(lpTeachersCache);});
 document.querySelector("#summary-search").addEventListener("input",(e)=>{summaryQuery=e.target.value;renderSummary();});
 

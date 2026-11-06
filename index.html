@@ -167,6 +167,21 @@
               </form>
             </section>
 
+            <section class="panel compose-panel" data-lp-pane="schedule" data-admin-only id="lp-copy-panel" hidden>
+              <div class="panel-heading"><div><h2>Copy a previous term’s schedule</h2><p>Generate the new term automatically: every teacher and subject of the earlier term is scheduled again with the same weeks and days, starting on the date you choose. Existing schedules are never overwritten.</p></div></div>
+              <form id="lp-copy-form" class="portal-form">
+                <div class="form-row">
+                  <label class="login-field" for="lp-copy-from">Copy from<select id="lp-copy-from"><option value="1">Term 1</option><option value="2">Term 2</option><option value="3">Term 3</option></select></label>
+                  <label class="login-field" for="lp-copy-to">Into<select id="lp-copy-to"><option value="1">Term 1</option><option value="2" selected>Term 2</option><option value="3">Term 3</option></select></label>
+                </div>
+                <div class="form-row">
+                  <label class="login-field" for="lp-copy-start">First lesson-plan date of the new term<input id="lp-copy-start" type="date" required /></label>
+                  <label class="login-field" for="lp-copy-teacher">Teachers<select id="lp-copy-teacher"><option value="">All teachers</option></select></label>
+                </div>
+                <div class="form-actions"><span class="form-hint">Days off set in Settings still apply to the new dates.</span><button class="button button-primary" type="submit">Copy schedule</button></div>
+              </form>
+            </section>
+
             <!-- SUMMARY: every teacher, their subjects and submission counts -->
             <div id="lp-summary-pane" data-lp-pane="summary" data-admin-only hidden>
               <section class="panel term-filter-panel"><label class="search-box summary-search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m16 16 4 4"/></svg><input id="summary-search" type="search" placeholder="Search teacher or subject" aria-label="Search teacher or subject" autocomplete="off" /></label><div class="summary-filter" role="group" aria-label="Term filter">
@@ -360,8 +375,12 @@
               </section>
 
               <section class="panel security-panel danger-panel" id="settings-reset-panel">
-                <div class="panel-heading"><div><h2>Term reset</h2><p>Start a new term with a clean database. This permanently deletes every teacher’s class schedule, the lesson-plan calendars, all uploaded lesson plans and their revisions, and the days-off list. Accounts, announcements, memos and attendance records are kept.</p></div></div>
+                <div class="panel-heading"><div><h2>Term reset</h2><p>Start a new term with a clean database. Choose a term, or all terms. This permanently deletes that term’s lesson-plan calendars, uploaded lesson plans and revisions, and the days off inside it. Optionally it also clears the teachers’ weekly class timetables. Accounts, announcements, memos and attendance records are kept.</p></div></div>
                 <form id="reset-form" class="portal-form">
+                  <label class="login-field" for="reset-term">Which term do you want to reset?
+                    <select id="reset-term"><option value="all">All terms</option><option value="1">Term 1</option><option value="2">Term 2</option><option value="3">Term 3</option></select>
+                  </label>
+                  <label class="checkbox-field" id="reset-timetable-wrap"><input type="checkbox" id="reset-timetable" checked /> Also clear teachers’ weekly class timetables (these are not tied to a term)</label>
                   <p id="reset-summary" class="form-hint"></p>
                   <p class="lp-note">Download the lesson plans first. This cannot be undone.</p>
                   <div class="form-row">

@@ -307,9 +307,19 @@ function updateDownloadLink() {
 async function loadDataSummary() {
   dataSummary = await api("/api/lesson-plans/data-summary");
   updateDownloadLink();
-  const d = dataSummary;
-  $("#reset-summary").textContent = `Right now: ${d.scheduleEntries} class schedule entr${d.scheduleEntries === 1 ? "y" : "ies"}, ${d.tasks} lesson-plan calendar day${d.tasks === 1 ? "" : "s"}, ${d.files} uploaded lesson plan${d.files === 1 ? "" : "s"} and ${d.exemptDays} day${d.exemptDays === 1 ? "" : "s"} off would be deleted.`;
+  updateResetSummary();
 }
+function updateResetSummary() {
+  const d = dataSummary; if (!d) return;
+  const term = $("#reset-term").value;
+  const days = term === "all" ? d.tasks : d.termTasks[term] || 0;
+  const plans = term === "all" ? d.files : d.perTerm[term] || 0;
+  const label = term === "all" ? "all terms" : `Term ${term}`;
+  const timetable = $("#reset-timetable").checked ? `, ${d.scheduleEntries} class timetable entr${d.scheduleEntries === 1 ? "y" : "ies"}` : "";
+  $("#reset-summary").textContent = `Resetting ${label} would delete ${days} lesson-plan calendar day${days === 1 ? "" : "s"} and ${plans} uploaded lesson plan${plans === 1 ? "" : "s"}${timetable}.`;
+}
+$("#reset-term").addEventListener("change", () => { $("#reset-timetable").checked = $("#reset-term").value === "all"; updateResetSummary(); });
+$("#reset-timetable").addEventListener("change", updateResetSummary);
 $("#download-term").addEventListener("change", updateDownloadLink);
 $("#download-all").addEventListener("click", (event) => { if ($("#download-all").getAttribute("aria-disabled") === "true") event.preventDefault(); });
 
@@ -320,12 +330,13 @@ $("#reset-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const form = event.currentTarget;
   const error = $("#reset-error"); error.hidden = true;
-  if (!confirm("Reset the term now? All class schedules, lesson-plan calendars and uploaded lesson plans will be permanently deleted.")) return;
+  const scope = $("#reset-term").value === "all" ? "ALL terms" : `Term ${$("#reset-term").value}`;
+  if (!confirm(`Reset ${scope} now? Its lesson-plan calendars and uploaded lesson plans will be permanently deleted.`)) return;
   const button = $("#reset-submit"); button.disabled = true;
   try {
-    const r = await api("/api/lesson-plans/reset-term", { method: "POST", body: { confirm: $("#reset-confirm").value.trim(), password: $("#reset-password").value } });
-    form.reset();
-    showToast(`Term reset. Removed ${r.lessonPlans} lesson plan${r.lessonPlans === 1 ? "" : "s"} and ${r.scheduleEntries} schedule entr${r.scheduleEntries === 1 ? "y" : "ies"}.${r.filesFailed ? ` ${r.filesFailed} stored file(s) could not be deleted yet and will be cleaned up later.` : ""}`);
+    const r = await api("/api/lesson-plans/reset-term", { method: "POST", body: { term: $("#reset-term").value, clearTimetable: $("#reset-timetable").checked, confirm: $("#reset-confirm").value.trim(), password: $("#reset-password").value } });
+    form.reset(); $("#reset-timetable").checked = true;
+    showToast(`${r.scope} reset. Removed ${r.lessonPlans} lesson plan${r.lessonPlans === 1 ? "" : "s"} and ${r.scheduleEntries} schedule entr${r.scheduleEntries === 1 ? "y" : "ies"}.${r.filesFailed ? ` ${r.filesFailed} stored file(s) could not be deleted yet and will be cleaned up later.` : ""}`);
     await Promise.all([loadDataSummary(), loadExemptDays()]);
     if (typeof refreshLessonPlans === "function") refreshLessonPlans().catch(() => {});
   } catch (requestError) { error.textContent = requestError.message; error.hidden = false; }

@@ -1036,11 +1036,12 @@ async function handleLessonPlanRoutes(request, response, url, actor) {
               (SELECT COUNT(*)::int FROM lesson_plan_subject_assignments) AS assignments,
               (SELECT COUNT(*)::int FROM teacher_schedule) AS schedule_entries,
               (SELECT COUNT(*)::int FROM lesson_plan_exempt_days) AS exempt_days`);
-    const perTerm = { 1: 0, 2: 0, 3: 0 };
+    const perTerm = { 1: 0, 2: 0, 3: 0 }, termTasks = { 1: 0, 2: 0, 3: 0 };
+    for (const row of (await pool.query("SELECT term_number, COUNT(*)::int AS n FROM lesson_plan_generated_tasks GROUP BY term_number")).rows) termTasks[row.term_number] = row.n;
     let totalFiles = 0, bytes = 0;
     for (const row of files.rows) { perTerm[row.term_number] = row.files; totalFiles += row.files; bytes += Number(row.bytes); }
     const c = counts.rows[0];
-    sendJson(response, 200, { files: totalFiles, bytes, perTerm, tasks: c.tasks, assignments: c.assignments, scheduleEntries: c.schedule_entries, exemptDays: c.exempt_days });
+    sendJson(response, 200, { files: totalFiles, bytes, perTerm, termTasks, tasks: c.tasks, assignments: c.assignments, scheduleEntries: c.schedule_entries, exemptDays: c.exempt_days });
     return true;
   }
   if (url.pathname === "/api/lesson-plans/download-all" && request.method === "GET") {
@@ -1098,40 +1099,108 @@ async function handleLessonPlanRoutes(request, response, url, actor) {
   if (url.pathname === "/api/lesson-plans/reset-term" && request.method === "POST") {
     ensureSameOrigin(request); requireRole(actor, admin);
     const body = await parseJson(request);
+    const termParam = String(body.term ?? "all");
+    const term = termParam === "all" ? null : Number(termParam);
+    if (term !== null && ![1, 2, 3].includes(term)) throw new HttpError(400, "Choose which term to reset: Term 1, 2, 3 or all terms.");
+    const scopeLabel = term ? `Term ${term}` : "All terms";
     if (body.confirm !== "RESET") throw new HttpError(400, "Type RESET to confirm the term reset.");
     const password = typeof body.password === "string" ? body.password : "";
     if (!password || password.length > 256) throw new HttpError(400, "Enter your password to confirm the term reset.");
     const me = await pool.query("SELECT password_hash FROM users WHERE id=$1 AND active=TRUE", [actor.id]);
     if (!me.rowCount || !(await passwordMatches(password, me.rows[0].password_hash))) throw new HttpError(400, "Your password is incorrect.");
+    // Class timetables are not tied to a term: they are cleared with "all terms", or when the admin ticks the box.
+    const clearTimetable = term === null ? body.clearTimetable !== false : body.clearTimetable === true;
     const summary = await inTransaction(async (connection) => {
-      // Collect stored-file keys first; the rows (and their uploads, revisions and retained dates) cascade away with the tasks.
+      // Collect stored-file keys first; uploads, revisions and retained dates cascade away with the tasks.
       const keys = (await connection.query(
-        `SELECT file_key AS k FROM lesson_plan_uploads WHERE file_key IS NOT NULL
-         UNION SELECT admin_revision_file_key FROM lesson_plan_uploads WHERE admin_revision_file_key IS NOT NULL
-         UNION SELECT file_key FROM lesson_plan_upload_versions WHERE file_key IS NOT NULL
-         UNION SELECT admin_revision_file_key FROM lesson_plan_upload_versions WHERE admin_revision_file_key IS NOT NULL`)).rows.map((r) => r.k);
-      const plans = (await connection.query("SELECT COUNT(*)::int AS n FROM lesson_plan_uploads")).rows[0].n;
-      const tasks = (await connection.query("DELETE FROM lesson_plan_generated_tasks")).rowCount;
-      const assignments = (await connection.query("DELETE FROM lesson_plan_subject_assignments")).rowCount;
-      const exempt = (await connection.query("DELETE FROM lesson_plan_exempt_days")).rowCount;
-      const schedule = (await connection.query("DELETE FROM teacher_schedule")).rowCount;
-      await connection.query("DELETE FROM notifications WHERE kind IN ('lesson_plan_deleted','lesson_plan_exempt')");
+        `SELECT x.file_key AS k FROM lesson_plan_uploads x JOIN lesson_plan_generated_tasks t ON t.id=x.task_id WHERE x.file_key IS NOT NULL AND ($1::int IS NULL OR t.term_number=$1)
+         UNION SELECT x.admin_revision_file_key FROM lesson_plan_uploads x JOIN lesson_plan_generated_tasks t ON t.id=x.task_id WHERE x.admin_revision_file_key IS NOT NULL AND ($1::int IS NULL OR t.term_number=$1)
+         UNION SELECT v.file_key FROM lesson_plan_upload_versions v JOIN lesson_plan_generated_tasks t ON t.id=v.task_id WHERE v.file_key IS NOT NULL AND ($1::int IS NULL OR t.term_number=$1)
+         UNION SELECT v.admin_revision_file_key FROM lesson_plan_upload_versions v JOIN lesson_plan_generated_tasks t ON t.id=v.task_id WHERE v.admin_revision_file_key IS NOT NULL AND ($1::int IS NULL OR t.term_number=$1)`, [term])).rows.map((r) => r.k);
+      const plans = (await connection.query("SELECT COUNT(*)::int AS n FROM lesson_plan_uploads x JOIN lesson_plan_generated_tasks t ON t.id=x.task_id WHERE $1::int IS NULL OR t.term_number=$1", [term])).rows[0].n;
+      let exempt, assignments;
+      if (term === null) {
+        exempt = (await connection.query("DELETE FROM lesson_plan_exempt_days")).rowCount;
+        assignments = (await connection.query("DELETE FROM lesson_plan_subject_assignments")).rowCount;
+      } else {
+        // Days off inside this term's dates go with it; subjects that only existed in this term are unassigned.
+        exempt = (await connection.query(
+          `DELETE FROM lesson_plan_exempt_days WHERE exempt_date BETWEEN (SELECT MIN(due_date) FROM lesson_plan_generated_tasks WHERE term_number=$1)
+             AND (SELECT MAX(due_date) FROM lesson_plan_generated_tasks WHERE term_number=$1)`, [term])).rowCount;
+        assignments = (await connection.query(
+          `DELETE FROM lesson_plan_subject_assignments a
+           WHERE EXISTS (SELECT 1 FROM lesson_plan_generated_tasks t WHERE t.term_number=$1 AND t.teacher_id=a.teacher_id AND t.subject_id=a.subject_id)
+             AND NOT EXISTS (SELECT 1 FROM lesson_plan_generated_tasks t WHERE t.term_number<>$1 AND t.teacher_id=a.teacher_id AND t.subject_id=a.subject_id)`, [term])).rowCount;
+      }
+      const tasks = (await connection.query("DELETE FROM lesson_plan_generated_tasks WHERE $1::int IS NULL OR term_number=$1", [term])).rowCount;
+      const schedule = clearTimetable ? (await connection.query("DELETE FROM teacher_schedule")).rowCount : 0;
+      if (term === null) await connection.query("DELETE FROM notifications WHERE kind IN ('lesson_plan_deleted','lesson_plan_exempt')");
       const teachers = await connection.query("SELECT id FROM users WHERE role='teacher' AND active=TRUE");
-      for (const t of teachers.rows) await notify(connection, t.id, "term_reset", "New term started", "The administrator reset the term. Your class schedule and lesson-plan calendar were cleared. Please enter your new schedule in Settings.");
-      await audit(connection, actor.id, "lessonplan.term_reset", "term", "all");
+      for (const t of teachers.rows) await notify(connection, t.id, "term_reset", term ? `Term ${term} was reset` : "New term started",
+        `The administrator reset ${scopeLabel.toLowerCase()}. Its lesson-plan calendars and uploaded lesson plans were cleared${clearTimetable ? ", and class schedules were cleared too. Please enter your new schedule in Settings" : ""}.`);
+      await audit(connection, actor.id, "lessonplan.term_reset", "term", term ? String(term) : "all");
       return { keys, plans, tasks, assignments, exempt, schedule };
     });
-    // Delete the files from storage only after the database change is safely committed. Anything missed is
+    // Delete the files from storage only after the database change is committed. Anything missed is
     // unreferenced and the storage clean-up removes it later.
     let filesRemoved = 0, filesFailed = 0;
     if (fileStore.enabled) {
       for (let i = 0; i < summary.keys.length; i += 100) {
-        try { await fileStorage.remove(summary.keys.slice(i, i + 100)); filesRemoved += Math.min(100, summary.keys.length - i); }
-        catch (error) { filesFailed += Math.min(100, summary.keys.length - i); console.error("Term reset: storage delete failed:", error.message); }
+        const n = Math.min(100, summary.keys.length - i);
+        try { await fileStorage.remove(summary.keys.slice(i, i + 100)); filesRemoved += n; }
+        catch (error) { filesFailed += n; console.error("Term reset: storage delete failed:", error.message); }
       }
     }
-    sendJson(response, 200, { ok: true, lessonPlans: summary.plans, calendarDays: summary.tasks, subjectAssignments: summary.assignments, scheduleEntries: summary.schedule, exemptDays: summary.exempt, filesRemoved, filesFailed });
+    sendJson(response, 200, { ok: true, scope: scopeLabel, lessonPlans: summary.plans, calendarDays: summary.tasks, subjectAssignments: summary.assignments, scheduleEntries: summary.schedule, exemptDays: summary.exempt, filesRemoved, filesFailed });
     return true;
+  }
+
+  // Copies the lesson-plan schedule of one term into another: same teachers, subjects, weeks and weekdays, new start date.
+  if (url.pathname === "/api/lesson-plans/copy-term" && request.method === "POST") {
+    ensureSameOrigin(request); requireRole(actor, admin);
+    const body = await parseJson(request);
+    const fromTerm = Number(body.fromTerm), toTerm = Number(body.toTerm), startDate = String(body.startDate || "");
+    const onlyTeacher = body.teacherId ? Number(body.teacherId) : null;
+    if (![1, 2, 3].includes(fromTerm) || ![1, 2, 3].includes(toTerm)) throw new HttpError(400, "Choose the term to copy from and the term to copy into.");
+    if (fromTerm === toTerm) throw new HttpError(400, "Choose two different terms.");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate) || Number.isNaN(new Date(`${startDate}T12:00:00Z`).getTime())) throw new HttpError(400, "Choose the first lesson-plan date of the new term.");
+    if (onlyTeacher !== null && (!Number.isInteger(onlyTeacher) || onlyTeacher < 1)) throw new HttpError(400, "Choose a valid teacher, or all teachers.");
+    const first = new Date(`${startDate}T12:00:00Z`);
+    const monday = new Date(first); monday.setUTCDate(monday.getUTCDate() - ((first.getUTCDay() + 6) % 7));
+    const result = await inTransaction(async (connection) => {
+      const source = (await connection.query(
+        `SELECT t.teacher_id, t.subject_id, MAX(t.week_number)::int AS weeks, ARRAY_AGG(DISTINCT EXTRACT(ISODOW FROM t.due_date)::int ORDER BY EXTRACT(ISODOW FROM t.due_date)::int) AS weekdays
+         FROM lesson_plan_generated_tasks t
+         JOIN lesson_plan_subject_assignments a ON a.teacher_id=t.teacher_id AND a.subject_id=t.subject_id
+         JOIN users u ON u.id=t.teacher_id AND u.role='teacher' AND u.active=TRUE
+         WHERE t.term_number=$1 AND ($2::bigint IS NULL OR t.teacher_id=$2)
+         GROUP BY t.teacher_id, t.subject_id`, [fromTerm, onlyTeacher])).rows;
+      if (!source.length) throw new HttpError(404, `Term ${fromTerm} has no lesson-plan schedule${onlyTeacher ? " for that teacher" : ""} to copy.`);
+      let copied = 0, skipped = 0, days = 0;
+      for (const row of source) {
+        const exists = await connection.query("SELECT 1 FROM lesson_plan_generated_tasks WHERE term_number=$1 AND teacher_id=$2 AND subject_id=$3 LIMIT 1", [toTerm, row.teacher_id, row.subject_id]);
+        if (exists.rowCount) { skipped++; continue; } // never overwrite a schedule that already exists
+        const weekdays = row.weekdays.filter((d) => d >= 1 && d <= 5);
+        for (let w = 1; w <= row.weeks; w++) weekdays.forEach((wd, i) => {
+          const date = new Date(monday); date.setUTCDate(date.getUTCDate() + (w - 1) * 7 + (wd - 1));
+          if (date < first) return;
+          row.pending = row.pending || []; row.pending.push({ w, d: i + 1, due: date.toISOString().slice(0, 10) });
+        });
+        for (const k of row.pending || []) {
+          await connection.query(`INSERT INTO lesson_plan_generated_tasks(term_number,week_number,day_number,teacher_id,subject_id,due_date) VALUES($1,$2,$3,$4,$5,$6::date)
+            ON CONFLICT(term_number,week_number,day_number,teacher_id,subject_id) DO NOTHING`, [toTerm, k.w, k.d, row.teacher_id, row.subject_id, k.due]); days++;
+        }
+        copied++;
+      }
+      if (!copied) throw new HttpError(409, `Term ${toTerm} already has a schedule for ${onlyTeacher ? "that teacher" : "every teacher"} in Term ${fromTerm}, so nothing was copied.`);
+      const weeks = Math.max(...source.map((r) => r.weeks)), wds = [...new Set(source.flatMap((r) => r.weekdays))].sort();
+      await connection.query(`INSERT INTO lesson_plan_term_settings(term_number,weeks,days_per_week,weekdays,start_date,updated_by,updated_at) VALUES($1,$2,$3,$4,$5,$6,NOW())
+        ON CONFLICT(term_number) DO UPDATE SET weeks=GREATEST(lesson_plan_term_settings.weeks,EXCLUDED.weeks),weekdays=EXCLUDED.weekdays,days_per_week=EXCLUDED.days_per_week,start_date=EXCLUDED.start_date,updated_by=EXCLUDED.updated_by,updated_at=NOW()`,
+        [toTerm, weeks, wds.length, wds.join(","), startDate, actor.id]);
+      await audit(connection, actor.id, "lessonplan.term_copied", "term", `${fromTerm}->${toTerm}`);
+      return { copied, skipped, days };
+    });
+    sendJson(response, 201, { ok: true, fromTerm, toTerm, ...result }); return true;
   }
 
   if (url.pathname === "/api/lesson-plans/tasks" && request.method === "GET") {
