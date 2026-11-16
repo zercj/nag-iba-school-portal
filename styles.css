@@ -1028,3 +1028,19 @@ body { font-size: 15px; line-height: 1.5; }
 .danger-panel { border-color: #e9c3c3; }
 .danger-panel .panel-heading h2 { color: #b42318; }
 #download-all { text-decoration: none; }
+
+/* Admin drawer: delete a subject's submitted plans (remarks are kept) */
+.lp-subject-tools { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; margin: 0 0 14px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: #fafbfd; }
+.lp-subject-tools > div { display: grid; gap: 2px; flex: 1 1 260px; min-width: 0; }
+.lp-subject-tools small { color: #6f7e91; line-height: 1.4; }
+.lp-subject-tools .button[disabled] { opacity: .5; cursor: not-allowed; }
+
+/* Select-days mode */
+.lp-tool-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.lp-subject-tools.is-picking { border-color: #e3b4b4; background: #fff8f7; }
+.lp-cal-task.is-pickable { position: relative; }
+.lp-cal-task.is-picked { outline: 2px solid #b42318; outline-offset: -2px; background: #fdecea; }
+.lp-cal-check { position: absolute; top: 4px; right: 6px; font-weight: 700; color: #b42318; font-size: 13px; }
+.lp-cal-task.is-unpickable { opacity: .45; cursor: not-allowed; box-shadow: none; }
+.lp-cal-task.is-unpickable:hover { transform: none; }
+#lp-subject-delete-dialog label[hidden] { display: none !important; }

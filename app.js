@@ -295,6 +295,8 @@ const LP_WEEKDAYS=["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
 function lpInfo(t){
   const s=String(t.status||"").toLowerCase();
   const late=!!t.submitted_late;
+  // The file was deleted by an administrator but the on-time / late remark is kept.
+  if(!t.upload_id && t.removed_timeliness) return t.removed_timeliness==="Late"?{tone:"done-late",label:"Late · file removed",short:"Late"}:{tone:"done",label:"On time · file removed",short:"On time"};
   if(s==="exempt" && !t.upload_id) return {tone:"exempt",label:"Not required",short:"Not required"};
   if(!t.upload_id && t.retained_submitted_at) return {tone:"revision",label:"Re-upload requested",short:"Re-upload"};
   if(s==="overdue") return {tone:"overdue",label:"Overdue",short:"Overdue"};
@@ -307,7 +309,10 @@ function lpInfo(t){
 }
 const lpDay=t=>String(t.due_date).slice(0,10);
 // A day the administrator marked as "no lesson plan needed" (holiday, leave, class suspension) does not count as required work.
-const lpRequired=t=>!(t.exempt && !t.upload_id);
+// A day whose file was deleted still counts as a day that was passed (its remark is kept).
+const lpHasRecord=t=>!!t.upload_id || !!t.removed_timeliness;
+const lpApproved=t=>["approved","completed"].includes(String(t.status||"").toLowerCase()) || (!t.upload_id && ["Approved","Completed"].includes(t.removed_review_state));
+const lpRequired=t=>!(t.exempt && !t.upload_id && !t.removed_timeliness);
 // Yellow warning triangle: shown to admins while a flagged upload (blank, not a lesson plan, or duplicate) is not yet approved.
 const LP_TRI='<svg class="lp-tri" viewBox="0 0 24 24" role="img" aria-label="Warning"><path class="lp-tri-body" d="M12 2.6 1.9 20.4h20.2z"/><path class="lp-tri-mark" d="M12 9.2v5.3M12 17.3v.2"/></svg>';
 const lpFlagged=t=>!!t.upload_id && !!t.flag_codes && !["approved","completed"].includes(String(t.status||"").toLowerCase());
@@ -431,6 +436,13 @@ function lpCalendarMarkup(scope, tasks){
     const t=list[0], info=lpInfo(t);
     const flagged=scope==="admin" && list.some(lpFlagged);
     const wk=list.length>1?`${list.length} plans`:`Wk ${t.week_number} · D${t.day_number}`;
+    if(scope==="admin" && lpPick.on){
+      const up=list.find(x=>!!x.upload_id);
+      if(!up){ cells+=`<div class="lp-cal-cell lp-cal-task lp-${info.tone} is-unpickable${todayCls}" aria-disabled="true"><span class="lp-cal-num">${d}</span><span class="lp-cal-wk">${wk}</span><span class="lp-cal-status">${info.short}</span></div>`; continue; }
+      const on=lpPick.ids.has(String(up.id));
+      cells+=`<button type="button" class="lp-cal-cell lp-cal-task lp-${info.tone} is-pickable${on?" is-picked":""}${todayCls}" data-lp-pick="${up.id}" aria-pressed="${on}" aria-label="${escapeHtml(lpDateLabel(iso))}: ${escapeHtml(info.label)}. ${on?"Selected for deletion":"Select for deletion"}"><span class="lp-cal-num">${d}</span><span class="lp-cal-check" aria-hidden="true">${on?"&#10003;":""}</span><span class="lp-cal-wk">${wk}</span><span class="lp-cal-status">${info.short}</span></button>`;
+      continue;
+    }
     cells+=`<button type="button" class="lp-cal-cell lp-cal-task lp-${info.tone}${todayCls}" data-lp-day="${iso}" data-lp-scope="${scope}" aria-label="${escapeHtml(lpDateLabel(iso))}: ${escapeHtml(info.label)}${flagged?" (warning: check this upload)":""}"><span class="lp-cal-num">${d}</span>${flagged?`<span class="lp-cal-tri" title="Needs a closer look: ${escapeHtml(list.find(lpFlagged).flag_reason||"flagged upload")}">${LP_TRI}</span>`:""}<span class="lp-cal-wk">${wk}</span><span class="lp-cal-status">${info.short}</span></button>`;
   }
   const counts={}; tasks.forEach(t=>{const k=lpInfo(t).tone; counts[k]=(counts[k]||0)+1;});
@@ -443,7 +455,7 @@ function lpCalendarMarkup(scope, tasks){
     <div class="lp-cal-progress" title="${done} of ${requiredCount} completed"><span>${done}/${requiredCount} completed</span><div class="lp-bar"><i style="width:${pct}%"></i></div></div></div>
     <div class="lp-cal-grid">${cells}</div>
     <div class="lp-legend">${legend}</div>
-    <p class="lp-cal-hint">Select a highlighted day to open that day's lesson plan.</p></div>`;
+    <p class="lp-cal-hint">${scope==="admin"&&lpPick.on?"Tap days that have a submitted file to select them. Grey days have nothing to delete.":"Select a highlighted day to open that day's lesson plan."}</p></div>`;
 }
 
 function lpAdminVisibleTasks(){
@@ -452,6 +464,9 @@ function lpAdminVisibleTasks(){
 
 /* Admin calendar: a drawer that slides in from the right. Pick a teacher, then move between their subjects. */
 const lpDrawer={open:false};
+// Admin "select days" mode: pick calendar days whose submitted file should be deleted (the remark is kept).
+const lpPick={on:false,ids:new Set()};
+function lpPickReset(){ lpPick.on=false; lpPick.ids.clear(); }
 function closeLpDrawer(){
   lpDrawer.open=false;
   const panel=document.querySelector("#lesson-plan-task-panel"); if(!panel) return;
@@ -462,6 +477,7 @@ function openLpDrawer(teacherId,subjectId){
   if(!lpTerm()){ setGlobalError("Choose a term first to view lesson plans."); return; }
   selectedLpTeacherId=teacherId!=null?String(teacherId):null;
   selectedLpSubjectId=subjectId!=null?String(subjectId):null;
+  lpPickReset();
   lpDrawer.open=true;
   const panel=document.querySelector("#lesson-plan-task-panel");
   panel.classList.add("is-open"); panel.setAttribute("aria-hidden","false");
@@ -492,7 +508,13 @@ function renderLpDrawer(){
   const current=subjects.get(String(selectedLpSubjectId));
   document.querySelector("#lp-task-detail-heading").textContent=current?`${teacherName} · ${current.name}`:teacherName;
   document.querySelector("#lp-drawer-subjects").innerHTML=subjectList.map(g=>`<button type="button" role="tab" aria-selected="${g.id===String(selectedLpSubjectId)}" class="lp-subject-pill${g.id===String(selectedLpSubjectId)?" is-active":""}" data-lp-drawer-subject="${escapeHtml(g.id)}">${escapeHtml(g.name)}${g.flagged?`<span class="lp-pill-tri">${LP_TRI}</span>`:""}${g.review?`<span class="lp-pill-alert" title="${g.review} to review">${g.review}</span>`:""}</button>`).join("");
-  document.querySelector("#lesson-plan-task-list").innerHTML=lpCalendarMarkup("admin",lpAdminVisibleTasks());
+  const visible=lpAdminVisibleTasks();
+  const filesCount=visible.filter(t=>!!t.upload_id).length, keptCount=visible.filter(t=>!t.upload_id&&t.removed_timeliness).length;
+  const pickedHere=[...lpPick.ids].filter(id=>visible.some(t=>String(t.id)===id&&!!t.upload_id));
+  const tools=current?(lpPick.on
+    ?`<div class="lp-subject-tools is-picking"><div><strong>${pickedHere.length} day${pickedHere.length===1?"":"s"} selected</strong><small>Tap days on the calendar. Only the files are deleted; each day keeps its On time / Late remark.</small></div><div class="lp-tool-actions"><button type="button" class="button button-secondary" data-lp-pick-all ${filesCount?"":"disabled"}>Select all (${filesCount})</button><button type="button" class="button button-secondary" data-lp-pick-clear>Clear</button><button type="button" class="button button-danger" data-lp-pick-delete data-label="${escapeHtml(teacherName)} · ${escapeHtml(current.name)}" data-teacher="${escapeHtml(selectedLpTeacherId)}" data-subject="${escapeHtml(selectedLpSubjectId)}" ${pickedHere.length?"":"disabled"}>Delete selected…</button><button type="button" class="button button-secondary" data-lp-pick-cancel>Cancel</button></div></div>`
+    :`<div class="lp-subject-tools"><div><strong>${filesCount} submitted file${filesCount===1?"":"s"}</strong><small>${keptCount?`${keptCount} day${keptCount===1?"":"s"} already cleared (record kept). `:""}Pick days to delete their files. Each day keeps its On time / Late remark; overdue and in-progress days are not touched.</small></div><div class="lp-tool-actions"><button type="button" class="button button-danger-outline" data-lp-pick-start ${filesCount?"":"disabled"}>Select days to delete</button><button type="button" class="action-link danger-link" data-lp-subject-delete="${escapeHtml(selectedLpTeacherId)}|${escapeHtml(selectedLpSubjectId)}" data-label="${escapeHtml(teacherName)} · ${escapeHtml(current.name)}" data-count="${filesCount}" ${filesCount?"":"disabled"}>Delete whole subject…</button></div></div>`):"";
+  document.querySelector("#lesson-plan-task-list").innerHTML=tools+lpCalendarMarkup("admin",visible);
 }
 
 function renderLessonPlanTasks() {
@@ -528,6 +550,10 @@ function lpTaskControls(t, admin){
   const pdfLink=submitted?`<div class="lp-pdf-row"><button type="button" class="button button-primary lp-view-pdf" data-view-file="/api/lesson-plans/uploads/${t.upload_id}/file" data-view-title="${escapeHtml(t.file_name)}">View lesson plan</button><a class="action-link" href="/api/lesson-plans/uploads/${t.upload_id}/file?download=1">Download</a><small class="lp-pdf-name">${escapeHtml(t.file_name)}</small></div>`:"";
   const flagBanner=lpFlagged(t)?`<div class="lp-flag-banner" role="note">${LP_TRI}<div><strong>${admin?"Needs a closer look":"Submitted with a warning"}</strong><p>${escapeHtml(t.flag_reason||"This upload was flagged.")}</p>${t.appeal_note?`<p><em>${admin?"Teacher's note":"Your note"}:</em> ${escapeHtml(t.appeal_note)}</p>`:""}<small>${admin?"The warning clears when you approve this lesson plan.":"The warning clears once the administrator approves it."}</small></div></div>`:"";
   const retained=(!submitted&&t.retained_submitted_at)?`<p class="lp-note">${admin?"Submission deleted. The teacher keeps the original passing date":"An administrator removed your earlier submission. Your original passing date"} (${escapeHtml(formatDate(t.retained_submitted_at))}) ${admin?"and must upload again.":"is kept. Please upload again."}</p>`:"";
+  if(!submitted && t.removed_timeliness){
+    const late=t.removed_timeliness==="Late";
+    return `<p class="lp-note"><strong>${late?"Passed late":"Passed on time"}</strong> on ${escapeHtml(formatDate(t.removed_submitted_at))}${t.removed_review_state?` · ${escapeHtml(t.removed_review_state)}`:""}.</p><p class="lp-note">${admin?"The lesson-plan file was deleted":"The lesson-plan file was removed by an administrator"} on ${escapeHtml(formatDate(t.removed_at))}. Only this record is kept.</p>`;
+  }
   if(!submitted && t.exempt){
     const why=t.exempt_reason?` (${escapeHtml(t.exempt_reason)})`:"";
     return `<p class="lp-note">${admin?"No lesson plan is required from this teacher on this day":"You do not need to pass a lesson plan on this day"}${why}.</p>`;
@@ -586,9 +612,9 @@ function renderLessonPlanDashboard() {
   const term=lpTerm();
   const requiredTasks=lessonPlanTasks.filter(lpRequired);
   const total=requiredTasks.length;
-  const submitted=lessonPlanTasks.filter(t=>!!t.upload_id).length;
-  const approved=lessonPlanTasks.filter(t=>["approved","completed"].includes(String(t.status||"").toLowerCase())).length;
-  const pending=requiredTasks.filter(t=>!t.upload_id).length;
+  const submitted=lessonPlanTasks.filter(lpHasRecord).length;
+  const approved=lessonPlanTasks.filter(lpApproved).length;
+  const pending=requiredTasks.filter(t=>!lpHasRecord(t)).length;
   const tones={overdue:0,done:0,"done-late":0};
   lessonPlanTasks.forEach(t=>{const k=lpInfo(t).tone; if(k in tones) tones[k]++;});
   // One compact line instead of a wall of cards.
@@ -606,7 +632,7 @@ function renderLessonPlanDashboard() {
     lessonPlanTasks.filter(lpRequired).forEach(t=>{
       const name=t[key]||"Unassigned";
       if(!map.has(name)) map.set(name,{name,teachers:new Set(),subjects:new Set(),total:0,submitted:0,approved:0,overdue:0});
-      const g=map.get(name); g.total++; if(t.teacher_name)g.teachers.add(t.teacher_name); if(t.subject_name)g.subjects.add(t.subject_name); if(t.upload_id)g.submitted++; if(["approved","completed"].includes(String(t.status||"").toLowerCase()))g.approved++; if(lpInfo(t).tone==="overdue")g.overdue++;
+      const g=map.get(name); g.total++; if(t.teacher_name)g.teachers.add(t.teacher_name); if(t.subject_name)g.subjects.add(t.subject_name); if(lpHasRecord(t))g.submitted++; if(lpApproved(t))g.approved++; if(lpInfo(t).tone==="overdue")g.overdue++;
     });
     return [...map.values()];
   };
@@ -630,7 +656,7 @@ function renderLpAssignments(teachers){
   if(!term){ host.innerHTML=""; return; }
   document.querySelector("#lp-assignments-heading").textContent=`Teachers and subjects · Term ${term}`;
   const stats=new Map();
-  lessonPlanTasks.forEach(t=>{const k=`${t.teacher_id}|${t.subject_id}`; const g=stats.get(k)||{total:0,submitted:0}; if(lpRequired(t))g.total++; if(t.upload_id)g.submitted++; stats.set(k,g);});
+  lessonPlanTasks.forEach(t=>{const k=`${t.teacher_id}|${t.subject_id}`; const g=stats.get(k)||{total:0,submitted:0}; if(lpRequired(t))g.total++; if(lpHasRecord(t))g.submitted++; stats.set(k,g);});
   const scheduled=lessonPlanAssignments.filter(a=>stats.has(`${a.teacher_id}|${a.subject_id}`));
   if(!scheduled.length){ host.innerHTML=emptyFeed(`No teachers or subjects are scheduled for Term ${term} yet. Use the Schedule tab to add them.`); return; }
   const reviewBySubject=new Map();
@@ -1103,8 +1129,8 @@ document.querySelector("#lp-subject-progress").addEventListener("keydown",(event
 document.querySelector("#lp-close-details").addEventListener("click",closeLpDrawer);
 document.querySelector("#lp-drawer-scrim").addEventListener("click",closeLpDrawer);
 document.addEventListener("keydown",(event)=>{ if(event.key==="Escape" && lpDrawer.open && !document.querySelector("dialog[open]")) closeLpDrawer(); });
-document.querySelector("#lp-drawer-teachers").addEventListener("click",(event)=>{ const b=event.target.closest("[data-lp-drawer-teacher]"); if(!b)return; selectedLpTeacherId=b.dataset.lpDrawerTeacher; selectedLpSubjectId=null; renderLpDrawer(); });
-document.querySelector("#lp-drawer-subjects").addEventListener("click",(event)=>{ const b=event.target.closest("[data-lp-drawer-subject]"); if(!b)return; selectedLpSubjectId=b.dataset.lpDrawerSubject; renderLpDrawer(); });
+document.querySelector("#lp-drawer-teachers").addEventListener("click",(event)=>{ const b=event.target.closest("[data-lp-drawer-teacher]"); if(!b)return; selectedLpTeacherId=b.dataset.lpDrawerTeacher; selectedLpSubjectId=null; lpPickReset(); renderLpDrawer(); });
+document.querySelector("#lp-drawer-subjects").addEventListener("click",(event)=>{ const b=event.target.closest("[data-lp-drawer-subject]"); if(!b)return; selectedLpSubjectId=b.dataset.lpDrawerSubject; lpPickReset(); renderLpDrawer(); });
 document.querySelector("#lp-teacher-progress").addEventListener("click",(event)=>{
   const b=event.target.closest("[data-lp-open-teacher]"); if(!b)return;
   const match=lessonPlanTasks.find(t=>t.teacher_name===b.dataset.lpOpenTeacher); if(!match)return;
@@ -1171,6 +1197,50 @@ document.querySelector("#view-lesson-plans").addEventListener("click",(event)=>{
   document.querySelector("#lp-delete-dialog").showModal();
 });
 for(const id of ["#lp-delete-cancel","#lp-delete-close"]) document.querySelector(id).addEventListener("click",()=>document.querySelector("#lp-delete-dialog").close());
+/* Admin: delete every submitted plan of one teacher's subject; the On time / Late remarks stay. */
+let lpSubjectDeleteTarget=null;
+document.addEventListener("click",(event)=>{
+  const t=event.target;
+  const pk=t.closest("[data-lp-pick]"); if(pk){ const id=pk.dataset.lpPick; if(lpPick.ids.has(id)) lpPick.ids.delete(id); else lpPick.ids.add(id); renderLpDrawer(); return; }
+  if(t.closest("[data-lp-pick-start]")){ lpPick.on=true; lpPick.ids.clear(); renderLpDrawer(); return; }
+  if(t.closest("[data-lp-pick-cancel]")){ lpPickReset(); renderLpDrawer(); return; }
+  if(t.closest("[data-lp-pick-clear]")){ lpPick.ids.clear(); renderLpDrawer(); return; }
+  if(t.closest("[data-lp-pick-all]")){ lpAdminVisibleTasks().filter(x=>!!x.upload_id).forEach(x=>lpPick.ids.add(String(x.id))); renderLpDrawer(); return; }
+  const pd=t.closest("[data-lp-pick-delete]");
+  if(pd&&!pd.disabled){
+    const vis=lpAdminVisibleTasks(), ids=[...lpPick.ids].filter(id=>vis.some(x=>String(x.id)===id&&!!x.upload_id));
+    if(!ids.length)return;
+    lpSubjectDeleteTarget={teacherId:pd.dataset.teacher,subjectId:pd.dataset.subject,taskIds:ids.map(Number)};
+    const dates=vis.filter(x=>ids.includes(String(x.id))).map(x=>lpDay(x)).sort().map(d=>lpDateLabel(d,{month:"short",day:"numeric"}));
+    document.querySelector("#lp-subject-delete-summary").textContent=`${pd.dataset.label} · ${ids.length} selected day${ids.length===1?"":"s"}: ${dates.join(", ")}`;
+    const sel=document.querySelector("#lp-subject-delete-term"); sel.innerHTML=""; sel.closest("label").hidden=true; sel.required=false;
+    document.querySelector("#lp-subject-delete-form").reset();
+    document.querySelector("#lp-subject-delete-dialog").showModal(); return;
+  }
+  const b=event.target.closest("[data-lp-subject-delete]"); if(!b||b.disabled)return;
+  const [teacherId,subjectId]=b.dataset.lpSubjectDelete.split("|");
+  lpSubjectDeleteTarget={teacherId,subjectId};
+  document.querySelector("#lp-subject-delete-term").closest("label").hidden=false;
+  const term=lpTerm();
+  document.querySelector("#lp-subject-delete-summary").textContent=`${b.dataset.label} · ${b.dataset.count} submitted file${b.dataset.count==="1"?"":"s"} in Term ${term}`;
+  const sel=document.querySelector("#lp-subject-delete-term");
+  sel.innerHTML=`<option value="${term}">Term ${term} only (the term you are viewing)</option><option value="all">All terms for this subject</option>`;
+  document.querySelector("#lp-subject-delete-form").reset();
+  document.querySelector("#lp-subject-delete-dialog").showModal();
+});
+for(const id of ["#lp-subject-delete-cancel","#lp-subject-delete-close"]) document.querySelector(id).addEventListener("click",()=>document.querySelector("#lp-subject-delete-dialog").close());
+document.querySelector("#lp-subject-delete-form").addEventListener("submit",async(event)=>{
+  event.preventDefault(); if(!lpSubjectDeleteTarget)return;
+  const data=new FormData(event.currentTarget), button=event.currentTarget.querySelector('button[type="submit"]'); button.disabled=true;
+  try{
+    const r=await api("/api/lesson-plans/subject-uploads",{method:"DELETE",body:{teacherId:lpSubjectDeleteTarget.teacherId,subjectId:lpSubjectDeleteTarget.subjectId,taskIds:lpSubjectDeleteTarget.taskIds,term:data.get("term"),reason:data.get("reason"),password:data.get("password")}});
+    document.querySelector("#lp-subject-delete-dialog").close(); lpSubjectDeleteTarget=null; lpPickReset();
+    await refreshLessonPlans(); await refreshLpNotifications();
+    showToast(`Deleted ${r.lessonPlans} lesson plan${r.lessonPlans===1?"":"s"}. On time / Late remarks were kept.${r.filesFailed?` ${r.filesFailed} stored file(s) could not be deleted yet and will be cleaned up later.`:""}`);
+  }catch(e){ document.querySelector("#lp-subject-delete-dialog").close(); setGlobalError(e.message); }
+  finally{ button.disabled=false; }
+});
+
 document.querySelector("#lp-delete-form").addEventListener("submit",async(event)=>{
   event.preventDefault(); if(!lpDeleteTarget)return;
   const data=new FormData(event.currentTarget);
@@ -1229,11 +1299,11 @@ function renderSummary() {
     const r = { total: list.length, submitted: 0, approved: 0, revision: 0, overdue: 0, waiting: 0 };
     list.forEach(t => {
       const s = String(t.status || "").toLowerCase();
-      if (t.upload_id) r.submitted++;
-      if (s === "approved" || s === "completed") r.approved++;
+      if (lpHasRecord(t)) r.submitted++;
+      if (lpApproved(t)) r.approved++;
       if (s === "for revision") r.revision++;
       if (lpInfo(t).tone === "overdue") r.overdue++;
-      if (!t.upload_id) r.waiting++;
+      if (!lpHasRecord(t)) r.waiting++;
     });
     return r;
   };

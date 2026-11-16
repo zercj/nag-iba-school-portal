@@ -397,3 +397,17 @@ CREATE TABLE IF NOT EXISTS lesson_plan_exempt_days (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS lp_exempt_unique ON lesson_plan_exempt_days (exempt_date, COALESCE(teacher_id, 0));
 CREATE INDEX IF NOT EXISTS lp_exempt_batch_idx ON lesson_plan_exempt_days (batch_id);
+
+-- When an administrator deletes a teacher's submitted lesson plans for a subject, the PDFs and
+-- their revision history are removed completely, but the remark for each day is kept here:
+-- whether it was passed on time or late (and where the review stood). Days that never had an
+-- upload keep their live Overdue / In progress status because the calendar row itself stays.
+CREATE TABLE IF NOT EXISTS lesson_plan_removed_records (
+  task_id BIGINT PRIMARY KEY REFERENCES lesson_plan_generated_tasks(id) ON DELETE CASCADE,
+  timeliness TEXT NOT NULL CHECK (timeliness IN ('On time', 'Late')),
+  review_state TEXT NOT NULL DEFAULT '',
+  submitted_at TIMESTAMPTZ NOT NULL,
+  removed_by BIGINT REFERENCES users(id) ON DELETE SET NULL,
+  removed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  reason TEXT NOT NULL DEFAULT ''
+);

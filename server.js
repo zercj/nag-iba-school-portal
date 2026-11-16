@@ -755,7 +755,7 @@ async function applyWeekdays(conn, assignmentId, term, weekdays) {
   }
   const have = new Set(existing.rows.map((r) => r.due));
   await conn.query(`DELETE FROM lesson_plan_generated_tasks t WHERE t.term_number=$1 AND t.teacher_id=$2 AND t.subject_id=$3
-    AND NOT (to_char(t.due_date,'YYYY-MM-DD') = ANY($4::text[])) AND NOT EXISTS (SELECT 1 FROM lesson_plan_uploads x WHERE x.task_id=t.id)`, [term,teacherId,subjectId,[...wanted.keys()]]);
+    AND NOT (to_char(t.due_date,'YYYY-MM-DD') = ANY($4::text[])) AND NOT EXISTS (SELECT 1 FROM lesson_plan_uploads x WHERE x.task_id=t.id) AND NOT EXISTS (SELECT 1 FROM lesson_plan_removed_records rr WHERE rr.task_id=t.id)`, [term,teacherId,subjectId,[...wanted.keys()]]);
   // Park remaining rows on high day numbers so renumbering cannot collide.
   await conn.query(`UPDATE lesson_plan_generated_tasks SET day_number=day_number+1000 WHERE term_number=$1 AND teacher_id=$2 AND subject_id=$3`, [term,teacherId,subjectId]);
   let n = 0;
@@ -946,7 +946,7 @@ async function handleLessonPlanRoutes(request, response, url, actor) {
         }
         // Re-saving a schedule drops days that are no longer instruction days, but never deletes submitted work.
         await conn.query(`DELETE FROM lesson_plan_generated_tasks t WHERE t.term_number=$1 AND t.teacher_id=$2 AND t.subject_id=$3
-          AND NOT (t.id = ANY($4::bigint[])) AND NOT EXISTS (SELECT 1 FROM lesson_plan_uploads x WHERE x.task_id=t.id)`, [term,teacherId,subjectId,ids]);
+          AND NOT (t.id = ANY($4::bigint[])) AND NOT EXISTS (SELECT 1 FROM lesson_plan_uploads x WHERE x.task_id=t.id) AND NOT EXISTS (SELECT 1 FROM lesson_plan_removed_records rr WHERE rr.task_id=t.id)`, [term,teacherId,subjectId,ids]);
       }
       await conn.query("COMMIT");
     } catch(e) { await conn.query("ROLLBACK"); throw e; } finally { conn.release(); }
@@ -1209,8 +1209,10 @@ async function handleLessonPlanRoutes(request, response, url, actor) {
     const result = await pool.query(`SELECT t.id,t.term_number,t.week_number,t.day_number,to_char(t.due_date,'YYYY-MM-DD') AS due_date,t.teacher_id,t.subject_id,
       u.display_name AS teacher_name,s.name AS subject_name,x.id AS upload_id,x.file_name,x.file_size,
       CASE WHEN x.id IS NOT NULL THEN (CASE WHEN x.status='Submitted' AND ${lpPassedLateSql('x.submitted_at','t')} THEN 'Late' ELSE x.status END)
+           WHEN rr.task_id IS NOT NULL THEN 'Removed'
            WHEN ${lpExemptSql('t')} THEN 'Exempt'
            WHEN ${LP_NOW_MANILA_SQL} > ${lpDeadlineSql('t')} THEN 'Overdue' ELSE 'Awaiting Upload' END AS status,
+      rr.timeliness AS removed_timeliness, rr.review_state AS removed_review_state, rr.removed_at AS removed_at, rr.submitted_at AS removed_submitted_at,
       ${lpExemptSql('t')} AS exempt, COALESCE(${lpExemptReasonSql('t')},'') AS exempt_reason,
       x.admin_feedback,x.admin_revision_file_name,x.submitted_at,
       COALESCE(x.flag_codes,'') AS flag_codes,COALESCE(x.flag_reason,'') AS flag_reason,COALESCE(x.appeal_note,'') AS appeal_note,
@@ -1220,6 +1222,7 @@ async function handleLessonPlanRoutes(request, response, url, actor) {
       FROM lesson_plan_generated_tasks t JOIN users u ON u.id=t.teacher_id JOIN subjects s ON s.id=t.subject_id
       LEFT JOIN lesson_plan_uploads x ON x.task_id=t.id
       LEFT JOIN lesson_plan_retained_dates r ON r.task_id=t.id
+      LEFT JOIN lesson_plan_removed_records rr ON rr.task_id=t.id
       WHERE t.term_number=$1 AND ($2 OR t.teacher_id=$3)
         AND EXISTS (
           SELECT 1 FROM lesson_plan_subject_assignments a
@@ -1248,6 +1251,8 @@ async function handleLessonPlanRoutes(request, response, url, actor) {
     if (!task.rowCount) throw new HttpError(404, "Lesson-plan task not found for your account.");
     const taskRow = task.rows[0];
     const resubmit = body.resubmit === true;
+    const removedRecord = await pool.query("SELECT timeliness FROM lesson_plan_removed_records WHERE task_id=$1", [taskId]);
+    if (removedRecord.rowCount) throw new HttpError(409, `The file for this day was removed by an administrator. Its record (${removedRecord.rows[0].timeliness}) is kept, so it cannot be uploaded again.`);
     const exemptNow = await pool.query(`SELECT ${lpExemptReasonSql('t')} AS reason FROM lesson_plan_generated_tasks t WHERE t.id=$1 AND ${lpExemptSql('t')}`, [taskId]);
     if (exemptNow.rowCount && !(await pool.query("SELECT 1 FROM lesson_plan_uploads WHERE task_id=$1", [taskId])).rowCount) {
       throw new HttpError(409, `No lesson plan is required on this day${exemptNow.rows[0].reason ? ` (${exemptNow.rows[0].reason})` : ""}.`);
@@ -1359,6 +1364,78 @@ async function handleLessonPlanRoutes(request, response, url, actor) {
     if (!admin.includes(actor.role) && Number(result.rows[0].teacher_id)!==Number(actor.id)) throw new HttpError(403,"You cannot access this revision document.");
     const f=result.rows[0];
     sendStoredFile(response,url,{name:f.admin_revision_file_name,mime:f.admin_revision_file_mime,data:await readStoredFile(f.admin_revision_file_key,f.admin_revision_file_data)}); return true;
+  }
+
+  // Administrator: delete every submitted lesson plan of ONE teacher's subject (one term, or all terms).
+  // The PDFs, revision history and stored files are removed for good; each day keeps its remark
+  // (On time / Late). Days with no upload are untouched, so Overdue and In progress stay as they are.
+  if (url.pathname === "/api/lesson-plans/subject-uploads" && request.method === "DELETE") {
+    ensureSameOrigin(request); requireRole(actor, admin);
+    const body = await parseJson(request);
+    const teacherId = Number(body.teacherId), subjectId = Number(body.subjectId);
+    if (!Number.isInteger(teacherId) || teacherId < 1 || !Number.isInteger(subjectId) || subjectId < 1) throw new HttpError(400, "Choose a teacher and a subject.");
+    // Either specific calendar days (taskIds) or a whole term / all terms of the subject.
+    let pickedTasks = null;
+    if (body.taskIds !== undefined) {
+      if (!Array.isArray(body.taskIds) || !body.taskIds.length || body.taskIds.length > 500) throw new HttpError(400, "Select at least one day to delete.");
+      pickedTasks = [...new Set(body.taskIds.map(Number))];
+      if (pickedTasks.some((n) => !Number.isInteger(n) || n < 1)) throw new HttpError(400, "Invalid day selection.");
+    }
+    const termParam = String(body.term ?? "");
+    const term = pickedTasks || termParam === "all" ? null : Number(termParam);
+    if (term !== null && ![1, 2, 3].includes(term)) throw new HttpError(400, "Choose Term 1, 2, 3 or all terms.");
+    const password = typeof body.password === "string" ? body.password : "";
+    if (!password || password.length > 256) throw new HttpError(400, "Enter your password to confirm the deletion.");
+    const me = await pool.query("SELECT password_hash FROM users WHERE id=$1 AND active=TRUE", [actor.id]);
+    if (!me.rowCount || !(await passwordMatches(password, me.rows[0].password_hash))) throw new HttpError(400, "Your password is incorrect.");
+    const reason = String(body.reason || "").trim().slice(0, 500);
+    const summary = await inTransaction(async (connection) => {
+      const found = await connection.query(
+        `SELECT x.id, x.task_id, s.name AS subject_name
+         FROM lesson_plan_uploads x
+         JOIN lesson_plan_generated_tasks t ON t.id=x.task_id
+         JOIN subjects s ON s.id=t.subject_id
+         WHERE t.teacher_id=$1 AND t.subject_id=$2 AND ($3::int IS NULL OR t.term_number=$3)
+           AND ($4::bigint[] IS NULL OR t.id = ANY($4::bigint[]))
+         FOR UPDATE OF x`, [teacherId, subjectId, term, pickedTasks]);
+      if (!found.rowCount) throw new HttpError(404, "There are no submitted lesson plans to delete for that teacher and subject.");
+      const taskIds = found.rows.map((r) => r.task_id);
+      const subjectName = found.rows[0].subject_name;
+      // Keep the remark for every day before its file is removed.
+      await connection.query(
+        `INSERT INTO lesson_plan_removed_records(task_id,timeliness,review_state,submitted_at,removed_by,reason)
+         SELECT x.task_id,
+                CASE WHEN x.status='Late' OR ${lpPassedLateSql('x.submitted_at', 't')} THEN 'Late' ELSE 'On time' END,
+                CASE x.status WHEN 'Approved' THEN 'Approved' WHEN 'Completed' THEN 'Completed' WHEN 'For Revision' THEN 'For revision' ELSE 'In review' END,
+                x.submitted_at, $2, $3
+         FROM lesson_plan_uploads x JOIN lesson_plan_generated_tasks t ON t.id=x.task_id
+         WHERE x.task_id = ANY($1::bigint[])
+         ON CONFLICT (task_id) DO UPDATE SET timeliness=EXCLUDED.timeliness, review_state=EXCLUDED.review_state,
+           submitted_at=EXCLUDED.submitted_at, removed_by=EXCLUDED.removed_by, removed_at=NOW(), reason=EXCLUDED.reason`,
+        [taskIds, actor.id, reason]);
+      const keys = new Set();
+      const own = await connection.query("SELECT file_key, admin_revision_file_key FROM lesson_plan_uploads WHERE task_id = ANY($1::bigint[])", [taskIds]);
+      const old = await connection.query("SELECT file_key, admin_revision_file_key FROM lesson_plan_upload_versions WHERE task_id = ANY($1::bigint[])", [taskIds]);
+      for (const r of [...own.rows, ...old.rows]) { if (r.file_key) keys.add(r.file_key); if (r.admin_revision_file_key) keys.add(r.admin_revision_file_key); }
+      const versions = (await connection.query("DELETE FROM lesson_plan_upload_versions WHERE task_id = ANY($1::bigint[])", [taskIds])).rowCount;
+      await connection.query("DELETE FROM lesson_plan_uploads WHERE task_id = ANY($1::bigint[])", [taskIds]);
+      await connection.query("DELETE FROM lesson_plan_retained_dates WHERE task_id = ANY($1::bigint[])", [taskIds]);
+      const scope = pickedTasks ? `${taskIds.length} selected day${taskIds.length === 1 ? "" : "s"}` : term ? `Term ${term}` : "all terms";
+      await notify(connection, teacherId, "lesson_plan_deleted", "An administrator removed your lesson-plan files",
+        `${subjectName} (${scope}): ${taskIds.length} submitted lesson plan${taskIds.length === 1 ? " was" : "s were"} removed. Your on-time / late record for those days is kept.${reason ? ` Reason: ${reason}` : ""}`);
+      await audit(connection, actor.id, "lessonplan.subject_uploads_deleted", "lesson_plan_subject", `${teacherId}:${subjectId}:${pickedTasks ? "days" : term ?? "all"}`);
+      return { plans: taskIds.length, versions, keys: [...keys], subjectName };
+    });
+    // Remove the stored PDFs only after the database change is committed.
+    let filesRemoved = 0, filesFailed = 0;
+    if (fileStore.enabled) {
+      for (let i = 0; i < summary.keys.length; i += 100) {
+        const chunk = summary.keys.slice(i, i + 100);
+        try { await fileStorage.remove(chunk); filesRemoved += chunk.length; }
+        catch (error) { filesFailed += chunk.length; console.error("Subject delete: storage delete failed:", error.message); }
+      }
+    }
+    sendJson(response, 200, { ok: true, lessonPlans: summary.plans, revisions: summary.versions, filesRemoved, filesFailed }); return true;
   }
 
   const deleteUploadMatch = url.pathname.match(/^\/api\/lesson-plans\/uploads\/(\d+)$/);

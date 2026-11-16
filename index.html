@@ -237,6 +237,18 @@
                 <div class="form-actions"><button class="button button-secondary" type="button" id="lp-warning-cancel">Cancel, choose another file</button><button class="button button-primary" type="submit">Yes, it is a lesson plan — submit</button></div>
               </form>
             </dialog>
+            <dialog id="lp-subject-delete-dialog" class="lp-dialog" aria-labelledby="lp-subject-delete-title">
+              <div class="lp-dialog-head"><div><small>Delete submitted lesson plans</small><h3 id="lp-subject-delete-title">Delete this subject's submitted plans?</h3></div><button type="button" class="lp-dialog-close" id="lp-subject-delete-close" aria-label="Close">&times;</button></div>
+              <form id="lp-subject-delete-form" class="lp-dialog-body">
+                <p class="lp-note" id="lp-subject-delete-summary"></p>
+                <p class="lp-note"><strong>Permanently removed:</strong> the uploaded PDFs, their earlier revisions and the stored files. This cannot be undone.</p>
+                <p class="lp-note"><strong>Kept:</strong> each day stays on the calendar with its remark (On time or Late). Days not yet submitted keep their live status (Overdue or In progress). Removed days cannot be uploaded again.</p>
+                <label class="login-field">Delete from<select name="term" id="lp-subject-delete-term"></select></label>
+                <label class="login-field">Reason shown to the teacher (optional)<input name="reason" maxlength="500" /></label>
+                <label class="login-field">Your password, to confirm<input name="password" type="password" autocomplete="current-password" required /></label>
+                <div class="form-actions"><button class="button button-secondary" type="button" id="lp-subject-delete-cancel">Cancel</button><button class="button button-danger" type="submit">Delete submitted plans</button></div>
+              </form>
+            </dialog>
             <dialog id="lp-delete-dialog" class="lp-dialog" aria-labelledby="lp-delete-title">
               <div class="lp-dialog-head"><div><small>Delete submission</small><h3 id="lp-delete-title">Delete this lesson plan?</h3></div><button type="button" class="lp-dialog-close" id="lp-delete-close" aria-label="Close">&times;</button></div>
               <form id="lp-delete-form" class="lp-dialog-body">
