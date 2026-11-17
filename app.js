@@ -1621,3 +1621,120 @@ document.querySelector("#pdf-viewer-close").addEventListener("click", closePdfVi
 // If the pop-up the viewer was opened from closes, close the viewer with it.
 document.addEventListener("close", (event) => { if (event.target.tagName === "DIALOG") closePdfViewer(); }, true);
 document.querySelector("#photo-dialog").addEventListener("click", (event) => { if (event.target === event.currentTarget) event.currentTarget.close(); });
+
+/* ====================== Administrator bulk tools: approve / delete submitted lesson plans ======================
+   Hidden shield icon on the Lesson plans page (administrators only). Pick Approve or Delete, then choose
+   all teachers or specific teachers and a due-date span. A live count shows what will be affected. */
+const lpBulk = { mode: "approve", teachers: [], previewTimer: 0, previewSeq: 0 };
+const lpBulkEl = (id) => document.querySelector(id);
+
+function lpBulkMondayIso() {
+  const [y, m, d] = lpTodayIso().split("-").map(Number);
+  const date = new Date(Date.UTC(y, m - 1, d));
+  date.setUTCDate(date.getUTCDate() - ((date.getUTCDay() + 6) % 7));
+  return date.toISOString().slice(0, 10);
+}
+function lpBulkTeacherIds() {
+  const form = lpBulkEl("#lp-bulk-form");
+  if (form.elements.who.value === "all") return "all";
+  return [...lpBulkEl("#lp-bulk-teachers").querySelectorAll("input:checked")].map((i) => Number(i.value));
+}
+function lpBulkRenderTeachers() {
+  const q = lpBulkEl("#lp-bulk-teacher-search").value.trim().toLowerCase();
+  const checked = new Set([...lpBulkEl("#lp-bulk-teachers").querySelectorAll("input:checked")].map((i) => i.value));
+  const list = lpBulk.teachers.filter((t) => !q || t.name.toLowerCase().includes(q) || checked.has(String(t.id)));
+  lpBulkEl("#lp-bulk-teachers").innerHTML = list.length
+    ? list.map((t) => `<label><input type="checkbox" value="${escapeHtml(t.id)}" ${checked.has(String(t.id)) ? "checked" : ""} />${escapeHtml(t.name)}</label>`).join("")
+    : '<p class="form-hint">No teachers found.</p>';
+}
+function lpBulkSchedulePreview() {
+  clearTimeout(lpBulk.previewTimer);
+  lpBulk.previewTimer = setTimeout(lpBulkPreview, 250);
+}
+async function lpBulkPreview() {
+  const form = lpBulkEl("#lp-bulk-form"), count = lpBulkEl("#lp-bulk-count"), submit = lpBulkEl("#lp-bulk-submit");
+  const teacherIds = lpBulkTeacherIds(), dateFrom = form.elements.dateFrom.value, dateTo = form.elements.dateTo.value;
+  const del = lpBulk.mode === "delete";
+  count.classList.toggle("is-danger", del);
+  if (teacherIds !== "all" && !teacherIds.length) { count.textContent = "Tick at least one teacher."; submit.disabled = true; return; }
+  if (!dateFrom || !dateTo || dateFrom > dateTo) { count.textContent = "Choose a valid date span (From must be on or before To)."; submit.disabled = true; return; }
+  const seq = ++lpBulk.previewSeq;
+  count.textContent = "Counting…";
+  try {
+    const r = await api(`/api/lesson-plans/bulk-${lpBulk.mode}`, { method: "POST", body: { teacherIds, dateFrom, dateTo, preview: true } });
+    if (seq !== lpBulk.previewSeq) return;
+    const n = r.plans, t = r.teachers;
+    count.textContent = n
+      ? `${n} submitted lesson plan${n === 1 ? "" : "s"} from ${t} teacher${t === 1 ? "" : "s"} will be ${del ? "deleted" : "approved"}.`
+      : `No submitted lesson plans ${del ? "to delete" : "awaiting approval"} in this selection.`;
+    submit.disabled = !n;
+  } catch (e) { if (seq === lpBulk.previewSeq) { count.textContent = e.message; submit.disabled = true; } }
+}
+async function lpBulkOpen(mode) {
+  lpBulk.mode = mode;
+  const del = mode === "delete", form = lpBulkEl("#lp-bulk-form");
+  lpBulkEl("#lp-bulk-kicker").textContent = del ? "Delete submitted lesson plans" : "Approve lesson plans";
+  lpBulkEl("#lp-bulk-title").textContent = del ? "Delete submitted lesson plans" : "Approve submitted lesson plans";
+  lpBulkEl("#lp-bulk-intro").textContent = del
+    ? "Choose whose submitted lesson plans to delete and which due dates to cover."
+    : "Choose whose submitted lesson plans to approve and which due dates to cover. Only plans awaiting review are approved.";
+  lpBulkEl("#lp-bulk-note-label").textContent = del ? "Reason shown to the teachers (optional)" : "Note to teachers (optional)";
+  lpBulkEl("#lp-bulk-password-wrap").hidden = !del;
+  form.elements.password.required = del;
+  lpBulkEl("#lp-bulk-warning").hidden = !del;
+  const submit = lpBulkEl("#lp-bulk-submit");
+  submit.textContent = del ? "Delete lesson plans" : "Approve lesson plans";
+  submit.className = `button ${del ? "button-danger" : "button-primary"}`;
+  form.reset();
+  lpBulkEl("#lp-bulk-teachers-wrap").hidden = true;
+  form.elements.dateFrom.value = lpBulkMondayIso();
+  form.elements.dateTo.value = lpTodayIso();
+  lpBulkEl("#lp-bulk-choice-dialog").close();
+  lpBulkEl("#lp-bulk-dialog").showModal();
+  try {
+    const { assignments } = await api("/api/lesson-plans/assignments");
+    const seen = new Map();
+    (assignments || []).forEach((a) => seen.set(String(a.teacher_id), { id: a.teacher_id, name: a.teacher_name }));
+    lpBulk.teachers = [...seen.values()].sort((a, b) => a.name.localeCompare(b.name));
+  } catch (e) { lpBulk.teachers = []; setGlobalError(e.message); }
+  lpBulkRenderTeachers();
+  lpBulkPreview();
+}
+
+lpBulkEl("#lp-admin-key").addEventListener("click", () => { if (isLpAdmin()) lpBulkEl("#lp-bulk-choice-dialog").showModal(); });
+lpBulkEl("#lp-bulk-choice-close").addEventListener("click", () => lpBulkEl("#lp-bulk-choice-dialog").close());
+lpBulkEl("#lp-bulk-choice-dialog").addEventListener("click", (event) => {
+  const choice = event.target.closest("[data-lp-bulk-mode]");
+  if (choice) lpBulkOpen(choice.dataset.lpBulkMode);
+});
+lpBulkEl("#lp-bulk-close").addEventListener("click", () => lpBulkEl("#lp-bulk-dialog").close());
+lpBulkEl("#lp-bulk-back").addEventListener("click", () => { lpBulkEl("#lp-bulk-dialog").close(); lpBulkEl("#lp-bulk-choice-dialog").showModal(); });
+lpBulkEl("#lp-bulk-form").addEventListener("change", (event) => {
+  if (event.target.name === "who") lpBulkEl("#lp-bulk-teachers-wrap").hidden = event.target.value !== "some";
+  lpBulkSchedulePreview();
+});
+lpBulkEl("#lp-bulk-teacher-search").addEventListener("input", lpBulkRenderTeachers);
+lpBulkEl("#lp-bulk-pick-all").addEventListener("click", () => { lpBulkEl("#lp-bulk-teachers").querySelectorAll("input").forEach((i) => { i.checked = true; }); lpBulkSchedulePreview(); });
+lpBulkEl("#lp-bulk-pick-none").addEventListener("click", () => { lpBulkEl("#lp-bulk-teachers").querySelectorAll("input").forEach((i) => { i.checked = false; }); lpBulkSchedulePreview(); });
+lpBulkEl("#lp-bulk-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget, submit = lpBulkEl("#lp-bulk-submit"), del = lpBulk.mode === "delete";
+  const teacherIds = lpBulkTeacherIds();
+  if (teacherIds !== "all" && !teacherIds.length) { setGlobalError("Choose All teachers or at least one teacher."); return; }
+  const dateFrom = form.elements.dateFrom.value, dateTo = form.elements.dateTo.value;
+  const who = teacherIds === "all" ? "all teachers" : `${teacherIds.length} teacher${teacherIds.length === 1 ? "" : "s"}`;
+  if (!confirm(`${del ? "Permanently delete" : "Approve"} submitted lesson plans for ${who}, due ${dateFrom} to ${dateTo}?`)) return;
+  submit.disabled = true;
+  try {
+    const body = { teacherIds, dateFrom, dateTo };
+    if (del) { body.reason = form.elements.note.value; body.password = form.elements.password.value; }
+    else body.feedback = form.elements.note.value;
+    const r = await api(`/api/lesson-plans/bulk-${lpBulk.mode}`, { method: "POST", body });
+    lpBulkEl("#lp-bulk-dialog").close();
+    await refreshLessonPlans(); await refreshLpNotifications();
+    showToast(del
+      ? `Deleted ${r.plans} lesson plan${r.plans === 1 ? "" : "s"} from ${r.teachers} teacher${r.teachers === 1 ? "" : "s"}. On time / Late remarks were kept.${r.filesFailed ? ` ${r.filesFailed} stored file(s) could not be deleted yet and will be cleaned up later.` : ""}`
+      : `Approved ${r.plans} lesson plan${r.plans === 1 ? "" : "s"} from ${r.teachers} teacher${r.teachers === 1 ? "" : "s"}.`);
+  } catch (e) { setGlobalError(e.message); }
+  finally { submit.disabled = false; }
+});

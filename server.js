@@ -1438,6 +1438,102 @@ async function handleLessonPlanRoutes(request, response, url, actor) {
     sendJson(response, 200, { ok: true, lessonPlans: summary.plans, revisions: summary.versions, filesRemoved, filesFailed }); return true;
   }
 
+  /* ---------- Administrator bulk tools (hidden shield icon on the Lesson plans page) ----------
+     Approve or delete submitted lesson plans for all teachers or chosen teachers, within a due-date span.
+     Send preview:true to only count what would be affected. */
+  if ((url.pathname === "/api/lesson-plans/bulk-approve" || url.pathname === "/api/lesson-plans/bulk-delete") && request.method === "POST") {
+    ensureSameOrigin(request); requireRole(actor, admin);
+    const body = await parseJson(request);
+    const scope = parseBulkScope(body);
+    const preview = body.preview === true;
+    const reason = String(body.reason || body.feedback || "").trim().slice(0, 500);
+    const rangeLabel = scope.dateFrom === scope.dateTo ? scope.dateFrom : `${scope.dateFrom} to ${scope.dateTo}`;
+    const picked = `($1::bigint[] IS NULL OR t.teacher_id = ANY($1::bigint[])) AND t.due_date BETWEEN $2::date AND $3::date
+      AND EXISTS (SELECT 1 FROM lesson_plan_subject_assignments a WHERE a.teacher_id=t.teacher_id AND a.subject_id=t.subject_id)`;
+    const params = [scope.teacherIds, scope.dateFrom, scope.dateTo];
+
+    if (url.pathname.endsWith("bulk-approve")) {
+      if (preview) {
+        const r = await pool.query(`SELECT COUNT(*)::int AS n, COUNT(DISTINCT t.teacher_id)::int AS teachers
+          FROM lesson_plan_uploads x JOIN lesson_plan_generated_tasks t ON t.id=x.task_id
+          WHERE x.status IN ('Submitted','Late') AND ${picked}`, params);
+        sendJson(response, 200, { ok: true, plans: r.rows[0].n, teachers: r.rows[0].teachers }); return true;
+      }
+      const summary = await inTransaction(async (connection) => {
+        const found = await connection.query(
+          `SELECT x.id, t.teacher_id FROM lesson_plan_uploads x JOIN lesson_plan_generated_tasks t ON t.id=x.task_id
+           WHERE x.status IN ('Submitted','Late') AND ${picked} FOR UPDATE OF x`, params);
+        if (!found.rowCount) throw new HttpError(404, "There are no submitted lesson plans awaiting approval for that selection.");
+        await connection.query(
+          "UPDATE lesson_plan_uploads SET status='Approved', admin_feedback=$1, reviewed_by=$2, reviewed_at=NOW() WHERE id = ANY($3::bigint[])",
+          [reason, actor.id, found.rows.map((r) => r.id)]);
+        const perTeacher = new Map();
+        for (const r of found.rows) perTeacher.set(r.teacher_id, (perTeacher.get(r.teacher_id) || 0) + 1);
+        for (const [teacherId, n] of perTeacher) {
+          await notify(connection, teacherId, "lesson_plan_approved", "Lesson plans approved",
+            `${n} of your lesson plan${n === 1 ? " was" : "s were"} approved by the administrator (${rangeLabel}).${reason ? ` Note: ${reason}` : ""}`);
+        }
+        await audit(connection, actor.id, "lessonplan.bulk_approved", "lesson_plan_uploads", `${found.rowCount} plans, ${scope.teacherIds ? scope.teacherIds.length + " teachers" : "all teachers"}, ${rangeLabel}`);
+        return { plans: found.rowCount, teachers: perTeacher.size };
+      });
+      sendJson(response, 200, { ok: true, ...summary }); return true;
+    }
+
+    // Bulk delete: same rules as "Delete whole subject": PDFs, revisions and stored files are removed for good,
+    // while each day keeps its On time / Late remark. Needs the administrator's password.
+    if (preview) {
+      const r = await pool.query(`SELECT COUNT(*)::int AS n, COUNT(DISTINCT t.teacher_id)::int AS teachers
+        FROM lesson_plan_uploads x JOIN lesson_plan_generated_tasks t ON t.id=x.task_id WHERE ${picked}`, params);
+      sendJson(response, 200, { ok: true, plans: r.rows[0].n, teachers: r.rows[0].teachers }); return true;
+    }
+    const password = typeof body.password === "string" ? body.password : "";
+    if (!password || password.length > 256) throw new HttpError(400, "Enter your password to confirm the deletion.");
+    const me = await pool.query("SELECT password_hash FROM users WHERE id=$1 AND active=TRUE", [actor.id]);
+    if (!me.rowCount || !(await passwordMatches(password, me.rows[0].password_hash))) throw new HttpError(400, "Your password is incorrect.");
+    const summary = await inTransaction(async (connection) => {
+      const found = await connection.query(
+        `SELECT x.id, x.task_id, t.teacher_id FROM lesson_plan_uploads x JOIN lesson_plan_generated_tasks t ON t.id=x.task_id
+         WHERE ${picked} FOR UPDATE OF x`, params);
+      if (!found.rowCount) throw new HttpError(404, "There are no submitted lesson plans to delete for that selection.");
+      const taskIds = found.rows.map((r) => r.task_id);
+      await connection.query(
+        `INSERT INTO lesson_plan_removed_records(task_id,timeliness,review_state,submitted_at,removed_by,reason)
+         SELECT x.task_id,
+                CASE WHEN x.status='Late' OR ${lpPassedLateSql('x.submitted_at', 't')} THEN 'Late' ELSE 'On time' END,
+                CASE x.status WHEN 'Approved' THEN 'Approved' WHEN 'Completed' THEN 'Completed' WHEN 'For Revision' THEN 'For revision' ELSE 'In review' END,
+                x.submitted_at, $2, $3
+         FROM lesson_plan_uploads x JOIN lesson_plan_generated_tasks t ON t.id=x.task_id
+         WHERE x.task_id = ANY($1::bigint[])
+         ON CONFLICT (task_id) DO UPDATE SET timeliness=EXCLUDED.timeliness, review_state=EXCLUDED.review_state,
+           submitted_at=EXCLUDED.submitted_at, removed_by=EXCLUDED.removed_by, removed_at=NOW(), reason=EXCLUDED.reason`,
+        [taskIds, actor.id, reason]);
+      const keys = new Set();
+      const own = await connection.query("SELECT file_key, admin_revision_file_key FROM lesson_plan_uploads WHERE task_id = ANY($1::bigint[])", [taskIds]);
+      const old = await connection.query("SELECT file_key, admin_revision_file_key FROM lesson_plan_upload_versions WHERE task_id = ANY($1::bigint[])", [taskIds]);
+      for (const r of [...own.rows, ...old.rows]) { if (r.file_key) keys.add(r.file_key); if (r.admin_revision_file_key) keys.add(r.admin_revision_file_key); }
+      const versions = (await connection.query("DELETE FROM lesson_plan_upload_versions WHERE task_id = ANY($1::bigint[])", [taskIds])).rowCount;
+      await connection.query("DELETE FROM lesson_plan_uploads WHERE task_id = ANY($1::bigint[])", [taskIds]);
+      await connection.query("DELETE FROM lesson_plan_retained_dates WHERE task_id = ANY($1::bigint[])", [taskIds]);
+      const perTeacher = new Map();
+      for (const r of found.rows) perTeacher.set(r.teacher_id, (perTeacher.get(r.teacher_id) || 0) + 1);
+      for (const [teacherId, n] of perTeacher) {
+        await notify(connection, teacherId, "lesson_plan_deleted", "An administrator removed your lesson-plan files",
+          `${n} submitted lesson plan${n === 1 ? " was" : "s were"} removed (${rangeLabel}). Your on-time / late record for those days is kept.${reason ? ` Reason: ${reason}` : ""}`);
+      }
+      await audit(connection, actor.id, "lessonplan.bulk_deleted", "lesson_plan_uploads", `${taskIds.length} plans, ${scope.teacherIds ? scope.teacherIds.length + " teachers" : "all teachers"}, ${rangeLabel}`);
+      return { plans: taskIds.length, teachers: perTeacher.size, versions, keys: [...keys] };
+    });
+    let filesRemoved = 0, filesFailed = 0;
+    if (fileStore.enabled) {
+      for (let i = 0; i < summary.keys.length; i += 100) {
+        const chunk = summary.keys.slice(i, i + 100);
+        try { await fileStorage.remove(chunk); filesRemoved += chunk.length; }
+        catch (error) { filesFailed += chunk.length; console.error("Bulk delete: storage delete failed:", error.message); }
+      }
+    }
+    sendJson(response, 200, { ok: true, plans: summary.plans, teachers: summary.teachers, revisions: summary.versions, filesRemoved, filesFailed }); return true;
+  }
+
   const deleteUploadMatch = url.pathname.match(/^\/api\/lesson-plans\/uploads\/(\d+)$/);
   if (deleteUploadMatch && request.method === "DELETE") {
     // Administrators may delete any submission, approved or not. The teacher is notified and,
@@ -1513,6 +1609,20 @@ async function handleLessonPlanRoutes(request, response, url, actor) {
     sendJson(response,200,{ok:true}); return true;
   }
   return false;
+}
+
+// Shared by the administrator bulk approve / delete tools: which teachers, and which due-date span.
+function parseBulkScope(body) {
+  let teacherIds = null;
+  if (body.teacherIds !== "all") {
+    if (!Array.isArray(body.teacherIds) || !body.teacherIds.length || body.teacherIds.length > 500) throw new HttpError(400, "Choose All teachers or at least one teacher.");
+    teacherIds = [...new Set(body.teacherIds.map(Number))];
+    if (teacherIds.some((n) => !Number.isInteger(n) || n < 1)) throw new HttpError(400, "Invalid teacher selection.");
+  }
+  const valid = (d) => typeof d === "string" && /^\d{4}-\d{2}-\d{2}$/.test(d) && !Number.isNaN(new Date(`${d}T12:00:00Z`).getTime());
+  if (!valid(body.dateFrom) || !valid(body.dateTo)) throw new HttpError(400, "Choose a valid start and end date.");
+  if (body.dateFrom > body.dateTo) throw new HttpError(400, "The start date must be on or before the end date.");
+  return { teacherIds, dateFrom: body.dateFrom, dateTo: body.dateTo };
 }
 
 function readFilePayload(file) {

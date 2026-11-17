@@ -121,7 +121,7 @@
           </section>
 
           <section class="portal-view" id="view-lesson-plans" hidden>
-            <div class="section-heading"><div><h2>Lesson plans</h2><p id="lp-page-subtitle">Schedule instruction, assign subjects to teachers, and review submissions.</p></div></div>
+            <div class="section-heading"><div><h2>Lesson plans</h2><p id="lp-page-subtitle">Schedule instruction, assign subjects to teachers, and review submissions.</p></div><button type="button" class="lp-admin-key" id="lp-admin-key" data-admin-only hidden title="Administrator tools" aria-label="Administrator tools: bulk approve or delete lesson plans"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 5 6v5c0 4.4 2.9 8.2 7 10 4.1-1.8 7-5.6 7-10V6l-7-3Z"/><path d="m9.5 12 2 2 3.5-4"/></svg></button></div>
             <section class="panel term-filter-panel" id="lp-term-panel"><label class="login-field" for="lp-view-term">Selected term<select id="lp-view-term"><option value="">Choose a term to view lesson plans</option><option value="1">Term 1</option><option value="2">Term 2</option><option value="3">Term 3</option></select></label></section>
 
             <nav class="lp-tabs" id="lp-tabs" role="tablist" aria-label="Lesson-plan sections" data-admin-only hidden>
@@ -235,6 +235,42 @@
                 <p class="lp-note">If this really is your lesson plan, you can appeal and it will be submitted anyway. The administrator will see a warning mark on it until they approve it. If it was the wrong file, cancel and choose another.</p>
                 <label class="login-field">Note to the administrator (optional)<textarea name="appealNote" rows="2" maxlength="500" placeholder="e.g. This is a scanned weekly plan covering Mon–Fri."></textarea></label>
                 <div class="form-actions"><button class="button button-secondary" type="button" id="lp-warning-cancel">Cancel, choose another file</button><button class="button button-primary" type="submit">Yes, it is a lesson plan — submit</button></div>
+              </form>
+            </dialog>
+            <!-- Hidden administrator tools: bulk approve / bulk delete of submitted lesson plans -->
+            <dialog id="lp-bulk-choice-dialog" class="lp-dialog" aria-labelledby="lp-bulk-choice-title">
+              <div class="lp-dialog-head"><div><small>Administrator tools</small><h3 id="lp-bulk-choice-title">What would you like to do?</h3></div><button type="button" class="lp-dialog-close" id="lp-bulk-choice-close" aria-label="Close">&times;</button></div>
+              <div class="lp-dialog-body">
+                <button type="button" class="lp-bulk-option" data-lp-bulk-mode="approve"><strong>Approve</strong><small>Approve many submitted lesson plans at once, for all teachers or chosen teachers, within a date span.</small></button>
+                <button type="button" class="lp-bulk-option lp-bulk-option-danger" data-lp-bulk-mode="delete"><strong>Delete</strong><small>Permanently delete submitted lesson plans, for all teachers or chosen teachers, within a date span.</small></button>
+              </div>
+            </dialog>
+            <dialog id="lp-bulk-dialog" class="lp-dialog" aria-labelledby="lp-bulk-title">
+              <div class="lp-dialog-head"><div><small id="lp-bulk-kicker">Approve lesson plans</small><h3 id="lp-bulk-title">Approve lesson plans</h3></div><button type="button" class="lp-dialog-close" id="lp-bulk-close" aria-label="Close">&times;</button></div>
+              <form id="lp-bulk-form" class="lp-dialog-body">
+                <p class="lp-note" id="lp-bulk-intro"></p>
+                <fieldset class="lp-bulk-fieldset">
+                  <legend>Teachers</legend>
+                  <label class="lp-choice"><input type="radio" name="who" value="all" checked /><span><strong>All teachers</strong></span></label>
+                  <label class="lp-choice"><input type="radio" name="who" value="some" /><span><strong>Specific teachers</strong><small>Tick one or more below.</small></span></label>
+                  <div id="lp-bulk-teachers-wrap" hidden>
+                    <input type="search" id="lp-bulk-teacher-search" placeholder="Search teacher" aria-label="Search teacher" autocomplete="off" />
+                    <div class="lp-bulk-teacher-actions"><button type="button" class="action-link" id="lp-bulk-pick-all">Select all</button><button type="button" class="action-link" id="lp-bulk-pick-none">Clear</button></div>
+                    <div id="lp-bulk-teachers" class="lp-bulk-teachers"></div>
+                  </div>
+                </fieldset>
+                <fieldset class="lp-bulk-fieldset">
+                  <legend>Dates (lesson-plan due date)</legend>
+                  <div class="lp-bulk-dates">
+                    <label class="login-field">From<input type="date" name="dateFrom" id="lp-bulk-from" required /></label>
+                    <label class="login-field">To<input type="date" name="dateTo" id="lp-bulk-to" required /></label>
+                  </div>
+                </fieldset>
+                <p class="lp-bulk-count" id="lp-bulk-count" aria-live="polite"></p>
+                <label class="login-field"><span id="lp-bulk-note-label">Note to teachers (optional)</span><input name="note" maxlength="500" /></label>
+                <label class="login-field" id="lp-bulk-password-wrap" hidden>Your password, to confirm<input name="password" type="password" autocomplete="current-password" /></label>
+                <p class="lp-note" id="lp-bulk-warning" hidden><strong>Permanently removed:</strong> the PDFs, their earlier revisions and the stored files. This cannot be undone. Each day keeps its On time / Late remark.</p>
+                <div class="form-actions"><button class="button button-secondary" type="button" id="lp-bulk-back">Back</button><button class="button button-primary" type="submit" id="lp-bulk-submit">Approve</button></div>
               </form>
             </dialog>
             <dialog id="lp-subject-delete-dialog" class="lp-dialog" aria-labelledby="lp-subject-delete-title">
