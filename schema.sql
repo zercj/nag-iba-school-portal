@@ -411,3 +411,13 @@ CREATE TABLE IF NOT EXISTS lesson_plan_removed_records (
   removed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   reason TEXT NOT NULL DEFAULT ''
 );
+
+-- The kept record of a deleted lesson plan also remembers the rest of the story, so teachers and
+-- administrators can still see it after the file is gone: file name, size, the administrator's
+-- feedback and review time, how many revisions there were, and whether the upload had been flagged.
+ALTER TABLE lesson_plan_removed_records ADD COLUMN IF NOT EXISTS file_name TEXT NOT NULL DEFAULT '';
+ALTER TABLE lesson_plan_removed_records ADD COLUMN IF NOT EXISTS file_size BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE lesson_plan_removed_records ADD COLUMN IF NOT EXISTS admin_feedback TEXT NOT NULL DEFAULT '';
+ALTER TABLE lesson_plan_removed_records ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ;
+ALTER TABLE lesson_plan_removed_records ADD COLUMN IF NOT EXISTS revision_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE lesson_plan_removed_records ADD COLUMN IF NOT EXISTS was_flagged BOOLEAN NOT NULL DEFAULT FALSE;

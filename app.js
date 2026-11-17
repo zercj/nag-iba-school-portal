@@ -552,7 +552,14 @@ function lpTaskControls(t, admin){
   const retained=(!submitted&&t.retained_submitted_at)?`<p class="lp-note">${admin?"Submission deleted. The teacher keeps the original passing date":"An administrator removed your earlier submission. Your original passing date"} (${escapeHtml(formatDate(t.retained_submitted_at))}) ${admin?"and must upload again.":"is kept. Please upload again."}</p>`:"";
   if(!submitted && t.removed_timeliness){
     const late=t.removed_timeliness==="Late";
-    return `<p class="lp-note"><strong>${late?"Passed late":"Passed on time"}</strong> on ${escapeHtml(formatDate(t.removed_submitted_at))}${t.removed_review_state?` · ${escapeHtml(t.removed_review_state)}`:""}.</p><p class="lp-note">${admin?"The lesson-plan file was deleted":"The lesson-plan file was removed by an administrator"} on ${escapeHtml(formatDate(t.removed_at))}. Only this record is kept.</p>`;
+    const bits=[];
+    if(t.removed_file_name) bits.push(`File: ${escapeHtml(t.removed_file_name)}${Number(t.removed_file_size)>0?` (${Math.max(1,Math.round(Number(t.removed_file_size)/1024))} KB)`:""}`);
+    if(t.removed_reviewed_at) bits.push(`Reviewed ${escapeHtml(formatDate(t.removed_reviewed_at))}`);
+    if(Number(t.removed_revision_count)>0) bits.push(`${Number(t.removed_revision_count)} earlier revision${Number(t.removed_revision_count)===1?"":"s"}`);
+    if(t.removed_was_flagged) bits.push(admin?"Had a warning mark":"Was submitted with a warning");
+    const extra=bits.length?`<p class="lp-note">${bits.join(" · ")}</p>`:"";
+    const feedback=t.removed_feedback?`<p class="lp-note"><em>${admin?"Your feedback":"Administrator feedback"}:</em> ${escapeHtml(t.removed_feedback)}</p>`:"";
+    return `<p class="lp-note"><strong>${late?"Passed late":"Passed on time"}</strong> on ${escapeHtml(formatDate(t.removed_submitted_at))}${t.removed_review_state?` · ${escapeHtml(t.removed_review_state)}`:""}.</p>${extra}${feedback}<p class="lp-note">${admin?"The lesson-plan file was deleted":"The lesson-plan file was removed by an administrator"} on ${escapeHtml(formatDate(t.removed_at))}. This record is kept.</p>`;
   }
   if(!submitted && t.exempt){
     const why=t.exempt_reason?` (${escapeHtml(t.exempt_reason)})`:"";

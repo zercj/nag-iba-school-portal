@@ -1256,6 +1256,7 @@ async function handleLessonPlanRoutes(request, response, url, actor) {
            WHEN ${lpExemptSql('t')} THEN 'Exempt'
            WHEN ${LP_NOW_MANILA_SQL} > ${lpDeadlineSql('t')} THEN 'Overdue' ELSE 'Awaiting Upload' END AS status,
       rr.timeliness AS removed_timeliness, rr.review_state AS removed_review_state, rr.removed_at AS removed_at, rr.submitted_at AS removed_submitted_at,
+      rr.file_name AS removed_file_name, rr.file_size AS removed_file_size, rr.admin_feedback AS removed_feedback, rr.reviewed_at AS removed_reviewed_at, rr.revision_count AS removed_revision_count, rr.was_flagged AS removed_was_flagged,
       ${lpExemptSql('t')} AS exempt, COALESCE(${lpExemptReasonSql('t')},'') AS exempt_reason,
       x.admin_feedback,x.admin_revision_file_name,x.submitted_at,
       COALESCE(x.flag_codes,'') AS flag_codes,COALESCE(x.flag_reason,'') AS flag_reason,COALESCE(x.appeal_note,'') AS appeal_note,
@@ -1445,17 +1446,7 @@ async function handleLessonPlanRoutes(request, response, url, actor) {
       const taskIds = found.rows.map((r) => r.task_id);
       const subjectName = found.rows[0].subject_name;
       // Keep the remark for every day before its file is removed.
-      await connection.query(
-        `INSERT INTO lesson_plan_removed_records(task_id,timeliness,review_state,submitted_at,removed_by,reason)
-         SELECT x.task_id,
-                CASE WHEN x.status='Late' OR ${lpPassedLateSql('x.submitted_at', 't')} THEN 'Late' ELSE 'On time' END,
-                CASE x.status WHEN 'Approved' THEN 'Approved' WHEN 'Completed' THEN 'Completed' WHEN 'For Revision' THEN 'For revision' ELSE 'In review' END,
-                x.submitted_at, $2, $3
-         FROM lesson_plan_uploads x JOIN lesson_plan_generated_tasks t ON t.id=x.task_id
-         WHERE x.task_id = ANY($1::bigint[])
-         ON CONFLICT (task_id) DO UPDATE SET timeliness=EXCLUDED.timeliness, review_state=EXCLUDED.review_state,
-           submitted_at=EXCLUDED.submitted_at, removed_by=EXCLUDED.removed_by, removed_at=NOW(), reason=EXCLUDED.reason`,
-        [taskIds, actor.id, reason]);
+      await archiveRemovedRecords(connection, taskIds, actor.id, reason);
       const keys = new Set();
       const own = await connection.query("SELECT file_key, admin_revision_file_key FROM lesson_plan_uploads WHERE task_id = ANY($1::bigint[])", [taskIds]);
       const old = await connection.query("SELECT file_key, admin_revision_file_key FROM lesson_plan_upload_versions WHERE task_id = ANY($1::bigint[])", [taskIds]);
@@ -1539,17 +1530,7 @@ async function handleLessonPlanRoutes(request, response, url, actor) {
          WHERE ${picked} FOR UPDATE OF x`, params);
       if (!found.rowCount) throw new HttpError(404, "There are no submitted lesson plans to delete for that selection.");
       const taskIds = found.rows.map((r) => r.task_id);
-      await connection.query(
-        `INSERT INTO lesson_plan_removed_records(task_id,timeliness,review_state,submitted_at,removed_by,reason)
-         SELECT x.task_id,
-                CASE WHEN x.status='Late' OR ${lpPassedLateSql('x.submitted_at', 't')} THEN 'Late' ELSE 'On time' END,
-                CASE x.status WHEN 'Approved' THEN 'Approved' WHEN 'Completed' THEN 'Completed' WHEN 'For Revision' THEN 'For revision' ELSE 'In review' END,
-                x.submitted_at, $2, $3
-         FROM lesson_plan_uploads x JOIN lesson_plan_generated_tasks t ON t.id=x.task_id
-         WHERE x.task_id = ANY($1::bigint[])
-         ON CONFLICT (task_id) DO UPDATE SET timeliness=EXCLUDED.timeliness, review_state=EXCLUDED.review_state,
-           submitted_at=EXCLUDED.submitted_at, removed_by=EXCLUDED.removed_by, removed_at=NOW(), reason=EXCLUDED.reason`,
-        [taskIds, actor.id, reason]);
+      await archiveRemovedRecords(connection, taskIds, actor.id, reason);
       const keys = new Set();
       const own = await connection.query("SELECT file_key, admin_revision_file_key FROM lesson_plan_uploads WHERE task_id = ANY($1::bigint[])", [taskIds]);
       const old = await connection.query("SELECT file_key, admin_revision_file_key FROM lesson_plan_upload_versions WHERE task_id = ANY($1::bigint[])", [taskIds]);
@@ -1652,6 +1633,27 @@ async function handleLessonPlanRoutes(request, response, url, actor) {
     sendJson(response,200,{ok:true}); return true;
   }
   return false;
+}
+
+// Before submitted lesson plans are deleted, keep a permanent record of each day: on time or late, where the
+// review stood, when it was passed, the file name and size, the administrator's feedback, the number of
+// revisions and whether it had been flagged. Teachers and administrators keep seeing this after the file is gone.
+async function archiveRemovedRecords(connection, taskIds, actorId, reason) {
+  await connection.query(
+    `INSERT INTO lesson_plan_removed_records(task_id,timeliness,review_state,submitted_at,removed_by,reason,file_name,file_size,admin_feedback,reviewed_at,revision_count,was_flagged)
+     SELECT x.task_id,
+            CASE WHEN x.status='Late' OR ${lpPassedLateSql('x.submitted_at', 't')} THEN 'Late' ELSE 'On time' END,
+            CASE x.status WHEN 'Approved' THEN 'Approved' WHEN 'Completed' THEN 'Completed' WHEN 'For Revision' THEN 'For revision' ELSE 'In review' END,
+            x.submitted_at, $2, $3, COALESCE(x.file_name,''), COALESCE(x.file_size,0), COALESCE(x.admin_feedback,''), x.reviewed_at,
+            (SELECT COUNT(*)::int FROM lesson_plan_upload_versions v WHERE v.task_id=x.task_id),
+            COALESCE(x.flag_codes,'') <> ''
+     FROM lesson_plan_uploads x JOIN lesson_plan_generated_tasks t ON t.id=x.task_id
+     WHERE x.task_id = ANY($1::bigint[])
+     ON CONFLICT (task_id) DO UPDATE SET timeliness=EXCLUDED.timeliness, review_state=EXCLUDED.review_state,
+       submitted_at=EXCLUDED.submitted_at, removed_by=EXCLUDED.removed_by, removed_at=NOW(), reason=EXCLUDED.reason,
+       file_name=EXCLUDED.file_name, file_size=EXCLUDED.file_size, admin_feedback=EXCLUDED.admin_feedback,
+       reviewed_at=EXCLUDED.reviewed_at, revision_count=EXCLUDED.revision_count, was_flagged=EXCLUDED.was_flagged`,
+    [taskIds, actorId, reason]);
 }
 
 // Shared by the administrator bulk approve / delete tools: which teachers, and which due-date span.
