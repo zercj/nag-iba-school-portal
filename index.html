@@ -422,6 +422,17 @@
                 </div>
               </section>
 
+              <section class="panel security-panel" id="settings-reclaim-panel">
+                <div class="panel-heading"><div><h2>Reclaim space</h2><p>After deleting lesson plans, the database may keep the freed space and still look full. This compacts the lesson-plan tables so that space is given back. Lesson plans, records and accounts are not changed.</p></div></div>
+                <form id="reclaim-form" class="portal-form">
+                  <p id="reclaim-info" class="form-hint">Checking…</p>
+                  <p class="lp-note">Lesson plans are unavailable for a short time while this runs (usually seconds to a couple of minutes). Best done when teachers are not uploading. Files kept in Supabase Storage are counted separately and are not affected.</p>
+                  <label class="login-field" for="reclaim-password">Your password<input id="reclaim-password" type="password" autocomplete="current-password" required maxlength="256" /></label>
+                  <p id="reclaim-error" class="form-error" role="alert" hidden></p>
+                  <div class="form-actions"><span class="form-hint">Safe to run more than once.</span><button class="button button-primary" id="reclaim-submit" type="submit">Reclaim space</button></div>
+                </form>
+              </section>
+
               <section class="panel security-panel danger-panel" id="settings-reset-panel">
                 <div class="panel-heading"><div><h2>Term reset</h2><p>Start a new term with a clean database. Choose a term, or all terms. This permanently deletes that term’s lesson-plan calendars, uploaded lesson plans and revisions, and the days off inside it. Optionally it also clears the teachers’ weekly class timetables. Accounts, announcements, memos and attendance records are kept.</p></div></div>
                 <form id="reset-form" class="portal-form">

@@ -1044,6 +1044,49 @@ async function handleLessonPlanRoutes(request, response, url, actor) {
     sendJson(response, 200, { files: totalFiles, bytes, perTerm, termTasks, tasks: c.tasks, assignments: c.assignments, scheduleEntries: c.schedule_entries, exemptDays: c.exempt_days });
     return true;
   }
+  /* ---------- Settings: reclaim disk space after big deletions ----------
+     Postgres keeps the space of deleted rows. VACUUM FULL rewrites the lesson-plan tables so the file shrinks.
+     It cannot run inside a transaction and briefly locks those tables, so it uses its own connection. */
+  const LP_SPACE_TABLES = ["lesson_plan_uploads", "lesson_plan_upload_versions"];
+  const lpSpaceInfo = async (db) => {
+    const r = await db.query(
+      `SELECT c.relname AS name, pg_total_relation_size(c.oid)::bigint AS bytes, COALESCE(s.n_dead_tup,0)::bigint AS dead_rows
+       FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace AND n.nspname=current_schema()
+       LEFT JOIN pg_stat_user_tables s ON s.relid=c.oid
+       WHERE c.relkind='r' AND c.relname = ANY($1::text[])`, [LP_SPACE_TABLES]);
+    return { bytes: r.rows.reduce((sum, x) => sum + Number(x.bytes), 0), deadRows: r.rows.reduce((sum, x) => sum + Number(x.dead_rows), 0) };
+  };
+  if (url.pathname === "/api/lesson-plans/space-info" && request.method === "GET") {
+    requireRole(actor, admin);
+    sendJson(response, 200, await lpSpaceInfo(pool)); return true;
+  }
+  if (url.pathname === "/api/lesson-plans/reclaim-space" && request.method === "POST") {
+    ensureSameOrigin(request); requireRole(actor, admin);
+    const body = await parseJson(request);
+    const password = typeof body.password === "string" ? body.password : "";
+    if (!password || password.length > 256) throw new HttpError(400, "Enter your password to reclaim space.");
+    const me = await pool.query("SELECT password_hash FROM users WHERE id=$1 AND active=TRUE", [actor.id]);
+    if (!me.rowCount || !(await passwordMatches(password, me.rows[0].password_hash))) throw new HttpError(400, "Your password is incorrect.");
+    const client = await pool.connect();
+    let before, after;
+    try {
+      before = await lpSpaceInfo(client);
+      await client.query("SET lock_timeout = '20s'");
+      await client.query("SET statement_timeout = 0");
+      for (const table of LP_SPACE_TABLES) await client.query(`VACUUM FULL ${table}`);
+      await client.query("RESET lock_timeout"); await client.query("RESET statement_timeout");
+      after = await lpSpaceInfo(client);
+    } catch (error) {
+      await client.query("RESET lock_timeout").catch(() => {}); await client.query("RESET statement_timeout").catch(() => {});
+      console.error("Reclaim space failed:", error.message);
+      if (error.code === "55P03") throw new HttpError(409, "The lesson-plan tables are busy right now. Try again in a minute, when nobody is uploading.");
+      if (error.code === "42501") throw new HttpError(403, "The database user is not allowed to run VACUUM FULL. Run it from your database dashboard instead.");
+      throw new HttpError(500, "Space could not be reclaimed. Please try again later.");
+    } finally { client.release(); }
+    await pool.query("INSERT INTO audit_logs (actor_id, action, target_type, target_id) VALUES ($1, $2, $3, $4)", [actor.id, "lessonplan.reclaim_space", "database", String(Math.max(0, before.bytes - after.bytes))]).catch(() => {});
+    sendJson(response, 200, { ok: true, beforeBytes: before.bytes, afterBytes: after.bytes, freedBytes: Math.max(0, before.bytes - after.bytes) }); return true;
+  }
+
   if (url.pathname === "/api/lesson-plans/download-all" && request.method === "GET") {
     requireRole(actor, admin);
     const termParam = url.searchParams.get("term") || "all";

@@ -308,6 +308,7 @@ async function loadDataSummary() {
   dataSummary = await api("/api/lesson-plans/data-summary");
   updateDownloadLink();
   updateResetSummary();
+  loadSpaceInfo();
 }
 function updateResetSummary() {
   const d = dataSummary; if (!d) return;
@@ -341,6 +342,27 @@ $("#reset-form").addEventListener("submit", async (event) => {
     if (typeof refreshLessonPlans === "function") refreshLessonPlans().catch(() => {});
   } catch (requestError) { error.textContent = requestError.message; error.hidden = false; }
   syncResetButton();
+});
+
+
+/* ====================== Settings: reclaim space ====================== */
+async function loadSpaceInfo() {
+  try {
+    const d = await api("/api/lesson-plans/space-info");
+    $("#reclaim-info").textContent = `Lesson-plan tables currently use ${fmtBytes(d.bytes)}${d.deadRows ? `, with about ${d.deadRows.toLocaleString()} deleted row${d.deadRows === 1 ? "" : "s"} still holding space` : ""}.`;
+  } catch (_) { $("#reclaim-info").textContent = "Current size could not be checked."; }
+}
+$("#reclaim-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const error = $("#reclaim-error"); error.hidden = true;
+  if (!confirm("Reclaim space now? Lesson plans will be briefly unavailable while the tables are compacted.")) return;
+  const button = $("#reclaim-submit"); button.disabled = true; button.textContent = "Working…";
+  try {
+    const r = await api("/api/lesson-plans/reclaim-space", { method: "POST", body: { password: $("#reclaim-password").value } });
+    $("#reclaim-password").value = "";
+    showToast(r.freedBytes > 0 ? `Reclaimed ${fmtBytes(r.freedBytes)}. Lesson-plan tables now use ${fmtBytes(r.afterBytes)}.` : "Done. There was no extra space to give back.");
+  } catch (requestError) { error.textContent = requestError.message; error.hidden = false; }
+  finally { button.disabled = false; button.textContent = "Reclaim space"; await loadSpaceInfo(); }
 });
 
 /* ====================== Announcements: "New announcement" pop-up ====================== */
