@@ -25,6 +25,8 @@ const schoolTimeZone = process.env.SCHOOL_TZ || "Asia/Manila";
 const LP_TZ = "Asia/Manila";
 const LP_NOW_MANILA_SQL = `(NOW() AT TIME ZONE '${LP_TZ}')`;
 const lpDeadlineSql = (alias) => `(${alias}.due_date + TIME '17:00')`;
+// The stored was_late flag (set at submission) wins; the live date comparison is only a fallback.
+const lpUploadLateSql = (up, alias) => `COALESCE(${up}.was_late, ${lpPassedLateSql(`${up}.submitted_at`, alias)})`;
 const lpPassedLateSql = (tsExpr, alias) => `((${tsExpr}) AT TIME ZONE '${LP_TZ}' > ${lpDeadlineSql(alias)})`;
 // A day is "not required" when an administrator marked it for every teacher (teacher_id NULL) or for this teacher.
 const lpExemptSql = (alias) => `EXISTS (SELECT 1 FROM lesson_plan_exempt_days e WHERE e.exempt_date=${alias}.due_date AND (e.teacher_id IS NULL OR e.teacher_id=${alias}.teacher_id))`;
@@ -941,7 +943,9 @@ async function handleLessonPlanRoutes(request, response, url, actor) {
         for (const k of keep) {
           const r = await conn.query(`INSERT INTO lesson_plan_generated_tasks(term_number,week_number,day_number,teacher_id,subject_id,due_date)
             VALUES($1,$2,$3,$4,$5,$6::date) ON CONFLICT(term_number,week_number,day_number,teacher_id,subject_id)
-            DO UPDATE SET due_date=EXCLUDED.due_date RETURNING id`, [term,k.w,k.d,teacherId,subjectId,k.due]);
+            DO UPDATE SET due_date=CASE WHEN EXISTS (SELECT 1 FROM lesson_plan_uploads x WHERE x.task_id=lesson_plan_generated_tasks.id)
+              OR EXISTS (SELECT 1 FROM lesson_plan_removed_records rr WHERE rr.task_id=lesson_plan_generated_tasks.id)
+              THEN lesson_plan_generated_tasks.due_date ELSE EXCLUDED.due_date END RETURNING id`, [term,k.w,k.d,teacherId,subjectId,k.due]);
           ids.push(r.rows[0].id); count++;
         }
         // Re-saving a schedule drops days that are no longer instruction days, but never deletes submitted work.
@@ -1251,7 +1255,7 @@ async function handleLessonPlanRoutes(request, response, url, actor) {
     if (![1,2,3].includes(term)) throw new HttpError(400, "Invalid term.");
     const result = await pool.query(`SELECT t.id,t.term_number,t.week_number,t.day_number,to_char(t.due_date,'YYYY-MM-DD') AS due_date,t.teacher_id,t.subject_id,
       u.display_name AS teacher_name,s.name AS subject_name,x.id AS upload_id,x.file_name,x.file_size,
-      CASE WHEN x.id IS NOT NULL THEN (CASE WHEN x.status='Submitted' AND ${lpPassedLateSql('x.submitted_at','t')} THEN 'Late' ELSE x.status END)
+      CASE WHEN x.id IS NOT NULL THEN (CASE WHEN x.status='Submitted' AND ${lpUploadLateSql('x','t')} THEN 'Late' ELSE x.status END)
            WHEN rr.task_id IS NOT NULL THEN 'Removed'
            WHEN ${lpExemptSql('t')} THEN 'Exempt'
            WHEN ${LP_NOW_MANILA_SQL} > ${lpDeadlineSql('t')} THEN 'Overdue' ELSE 'Awaiting Upload' END AS status,
@@ -1261,7 +1265,7 @@ async function handleLessonPlanRoutes(request, response, url, actor) {
       x.admin_feedback,x.admin_revision_file_name,x.submitted_at,
       COALESCE(x.flag_codes,'') AS flag_codes,COALESCE(x.flag_reason,'') AS flag_reason,COALESCE(x.appeal_note,'') AS appeal_note,
       r.original_submitted_at AS retained_submitted_at,
-      ${lpPassedLateSql('x.submitted_at','t')} AS submitted_late,
+      ${lpUploadLateSql('x','t')} AS submitted_late,
       (SELECT COUNT(*)::int FROM lesson_plan_upload_versions v WHERE v.task_id=t.id) AS revision_count
       FROM lesson_plan_generated_tasks t JOIN users u ON u.id=t.teacher_id JOIN subjects s ON s.id=t.subject_id
       LEFT JOIN lesson_plan_uploads x ON x.task_id=t.id
@@ -1365,11 +1369,11 @@ async function handleLessonPlanRoutes(request, response, url, actor) {
         const old = current.rows[0];
         await conn.query(`INSERT INTO lesson_plan_upload_versions(task_id,teacher_id,file_name,mime_type,file_size,file_data,file_hash,status,admin_feedback,admin_revision_file_name,admin_revision_file_mime,admin_revision_file_size,admin_revision_file_data,submitted_at,version_number,file_key,admin_revision_file_key)
           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`, [old.task_id,old.teacher_id,old.file_name,old.mime_type,old.file_size,old.file_data,old.file_hash,old.status,old.admin_feedback,old.admin_revision_file_name,old.admin_revision_file_mime,old.admin_revision_file_size,old.admin_revision_file_data,old.submitted_at,version,old.file_key,old.admin_revision_file_key]);
-        await conn.query(`UPDATE lesson_plan_uploads SET file_name=$1,mime_type='application/pdf',file_size=$2,file_data=$3,file_key=$10,file_hash=$4,status=$5,admin_feedback='',admin_revision_file_name='',admin_revision_file_size=0,admin_revision_file_data=NULL,admin_revision_file_key=NULL,submitted_at=NOW(),reviewed_by=NULL,reviewed_at=NULL,flag_codes=$6,flag_reason=$7,appeal_note=$8 WHERE task_id=$9`,
-          [fileName,data.length,storedFile.data,hash,status,flagCodes,flagReason,appealNote,taskId,storedFile.key]);
+        await conn.query(`UPDATE lesson_plan_uploads SET file_name=$1,mime_type='application/pdf',file_size=$2,file_data=$3,file_key=$10,file_hash=$4,status=$5,admin_feedback='',admin_revision_file_name='',admin_revision_file_size=0,admin_revision_file_data=NULL,admin_revision_file_key=NULL,submitted_at=NOW(),reviewed_by=NULL,reviewed_at=NULL,flag_codes=$6,flag_reason=$7,appeal_note=$8,was_late=$11 WHERE task_id=$9`,
+          [fileName,data.length,storedFile.data,hash,status,flagCodes,flagReason,appealNote,taskId,storedFile.key,status === "Late"]);
       } else {
-        await conn.query(`INSERT INTO lesson_plan_uploads(task_id,teacher_id,file_name,mime_type,file_size,file_data,file_hash,status,admin_feedback,submitted_at,reviewed_by,reviewed_at,flag_codes,flag_reason,appeal_note,file_key)
-          VALUES($1,$2,$3,'application/pdf',$4,$5,$6,$7,'',$8,NULL,NULL,$9,$10,$11,$12)`, [taskId,actor.id,fileName,data.length,storedFile.data,hash,status,submittedAt,flagCodes,flagReason,appealNote,storedFile.key]);
+        await conn.query(`INSERT INTO lesson_plan_uploads(task_id,teacher_id,file_name,mime_type,file_size,file_data,file_hash,status,admin_feedback,submitted_at,reviewed_by,reviewed_at,flag_codes,flag_reason,appeal_note,file_key,was_late)
+          VALUES($1,$2,$3,'application/pdf',$4,$5,$6,$7,'',$8,NULL,NULL,$9,$10,$11,$12,$13)`, [taskId,actor.id,fileName,data.length,storedFile.data,hash,status,submittedAt,flagCodes,flagReason,appealNote,storedFile.key,status === "Late"]);
         await conn.query("DELETE FROM lesson_plan_retained_dates WHERE task_id=$1", [taskId]);
       }
       await audit(conn, actor.id, resubmit ? "lessonplan.resubmitted" : "lessonplan.uploaded", "lesson_plan_task", taskId);
@@ -1642,7 +1646,7 @@ async function archiveRemovedRecords(connection, taskIds, actorId, reason) {
   await connection.query(
     `INSERT INTO lesson_plan_removed_records(task_id,timeliness,review_state,submitted_at,removed_by,reason,file_name,file_size,admin_feedback,reviewed_at,revision_count,was_flagged)
      SELECT x.task_id,
-            CASE WHEN x.status='Late' OR ${lpPassedLateSql('x.submitted_at', 't')} THEN 'Late' ELSE 'On time' END,
+            CASE WHEN x.status='Late' OR ${lpUploadLateSql('x', 't')} THEN 'Late' ELSE 'On time' END,
             CASE x.status WHEN 'Approved' THEN 'Approved' WHEN 'Completed' THEN 'Completed' WHEN 'For Revision' THEN 'For revision' ELSE 'In review' END,
             x.submitted_at, $2, $3, COALESCE(x.file_name,''), COALESCE(x.file_size,0), COALESCE(x.admin_feedback,''), x.reviewed_at,
             (SELECT COUNT(*)::int FROM lesson_plan_upload_versions v WHERE v.task_id=x.task_id),

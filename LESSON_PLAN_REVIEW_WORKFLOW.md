@@ -11,3 +11,6 @@ PDF uploads remain limited to 8 MB. Server-side checks enforce the revision work
 
 ## Records kept after an administrator deletes lesson plans
 Deleting submitted lesson plans (one subject, selected days, or the bulk Delete tool) removes the PDFs, earlier revisions and stored files, but each day keeps a permanent record that teachers and administrators can still see: On time or Late, where the review stood (Approved, For revision, In review), the date it was passed, the file name and size, the administrator's feedback and review date, how many revisions there were, and whether it had a warning mark. Days that were never submitted keep their live Overdue / In progress status. Removed days cannot be uploaded again. Records of days deleted before this update keep only On time / Late, the review state and the date.
+
+## Late is decided once
+Whether a submission was Late is stored when it is handed in (`lesson_plan_uploads.was_late`) and no longer recalculated from the calendar. Re-saving a schedule never moves the due date of a day that already holds a submission or a kept record.

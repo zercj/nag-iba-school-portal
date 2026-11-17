@@ -421,3 +421,12 @@ ALTER TABLE lesson_plan_removed_records ADD COLUMN IF NOT EXISTS admin_feedback 
 ALTER TABLE lesson_plan_removed_records ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ;
 ALTER TABLE lesson_plan_removed_records ADD COLUMN IF NOT EXISTS revision_count INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE lesson_plan_removed_records ADD COLUMN IF NOT EXISTS was_flagged BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- Whether a submission was late is decided once, at the moment it is handed in, and then kept. Later changes to
+-- the calendar (a new start date, changed weekdays) or an approval can no longer turn a Late plan into On time.
+ALTER TABLE lesson_plan_uploads ADD COLUMN IF NOT EXISTS was_late BOOLEAN;
+UPDATE lesson_plan_uploads x
+   SET was_late = (x.status = 'Late' OR (x.submitted_at AT TIME ZONE 'Asia/Manila') > (t.due_date + TIME '17:00'))
+  FROM lesson_plan_generated_tasks t
+ WHERE t.id = x.task_id AND x.was_late IS NULL;
+
